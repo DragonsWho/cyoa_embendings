@@ -118,4 +118,155 @@ button:hover {
     font-size: 0.85em;
     min-width: 120px;
     text-align: center;
+} 
+body {
+    font-family: sans-serif;
+    background: #121212;
+    color: #e0e0e0;
+    padding: 20px;
+}
+.main-container { max-width: 900px; margin: auto; }
+.container { background: #1e1e1e; padding: 20px; border-radius: 8px; margin-bottom: 20px; }
+h1 { color: #fff; text-align: center; }
+
+/* Стили поиска */
+.search-bar { display: flex; gap: 10px; }
+input[type="text"] {
+    flex-grow: 1; padding: 12px; border: 1px solid #444;
+    background: #2a2a2a; color: white; border-radius: 4px; font-size: 16px;
+}
+button {
+    padding: 10px 20px; background: #3f51b5; color: white;
+    border: none; border-radius: 4px; cursor: pointer; font-size: 16px;
+}
+button:hover { background: #303f9f; }
+
+/* НОВОЕ: Стили для радио-кнопок */
+.search-options {
+    margin-top: 15px; display: flex; gap: 15px; align-items: center; font-size: 0.9em; color: #aaa;
+}
+.radio-label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+.radio-label input { cursor: pointer; }
+
+/* Стили результатов */
+.result-item {
+    background: #2a2a2a; padding: 15px; margin-bottom: 10px; border-radius: 6px;
+}
+.result-header {
+    display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px;
+}
+.result-title {
+    font-size: 1.2em; color: #8c9eff; text-decoration: none; font-weight: bold;
+}
+.result-title:hover { text-decoration: underline; }
+
+.result-meta { display: flex; gap: 10px; font-size: 0.8em; }
+
+/* Бейджи для типа совпадения */
+.badge { padding: 3px 8px; border-radius: 4px; color: white; font-weight: bold; }
+.badge.summary { background-color: #2e7d32; } /* Зеленый для саммари */
+.badge.text { background-color: #555; }       /* Серый для текста */
+.score { color: #aaa; }
+
+.result-snippet {
+    font-size: 0.9em; color: #ccc; font-style: italic; line-height: 1.4;
+}
+
+
+/* ======== СТИЛИ ДЛЯ СПИСКА ВСЕХ ИГР ======== */
+#all-games-container h2 {
+    text-align: center;
+    margin-top: 0;
+    border-bottom: 1px solid #444;
+    padding-bottom: 10px;
+}
+
+#all-games-list {
+    max-height: 500px; /* Ограничение по высоте с прокруткой */
+    overflow-y: auto;
+    padding-right: 10px; /* Место для скроллбара */
+}
+
+/* Элемент в списке всех игр */
+.game-item-list {
+    background-color: #2a2a2a;
+    padding: 12px 15px;
+    margin-bottom: 8px;
+    border-radius: 6px;
+    border-left: 3px solid #3f51b5; /* Акцентная полоска слева */
+}
+
+.game-header-list {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.game-title-list {
+    font-weight: bold;
+    color: #e0e0e0;
+}
+
+.game-meta-list {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+}
+
+/* Общий стиль для всех меток */
+.status-indicator, .summary-toggle {
+    font-size: 0.8em;
+    padding: 3px 8px;
+    border-radius: 12px;
+    font-weight: bold;
+    white-space: nowrap; /* Запрет переноса текста */
+}
+
+/* Статус индексации */
+.status-indicator.indexed {
+    background-color: #2e7d32; /* Зеленый */
+    color: white;
+}
+
+.status-indicator.not-indexed {
+    background-color: #c62828; /* Красный */
+    color: white;
+}
+
+/* Статус summary */
+.status-indicator.no-summary {
+    background-color: #555; /* Серый */
+    color: #bbb;
+}
+
+/* Кликабельная метка Summary */
+.summary-toggle {
+    background-color: #3f51b5; /* Синий */
+    color: white;
+    cursor: pointer;
+    user-select: none; /* Запретить выделение текста при клике */
+    transition: background-color 0.2s;
+}
+
+.summary-toggle:hover {
+    background-color: #303f9f;
+}
+
+/* Контейнер для текста summary */
+.summary-content {
+    display: none; /* Скрыто по умолчанию */
+    margin-top: 12px;
+    padding: 10px;
+    background-color: #1a1a1a; /* Чуть темнее фона */
+    border-radius: 4px;
+    font-size: 0.9em;
+    color: #ccc;
+    line-height: 1.5;
+    border-top: 1px solid #444;
+    word-wrap: break-word; /* Перенос длинных слов */
+}
+
+/* Класс, который JS добавляет для показа блока */
+.summary-content.visible {
+    display: block;
 }

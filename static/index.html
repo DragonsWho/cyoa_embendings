@@ -3,42 +3,55 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Панель управления поиском</title>
-    <!-- ИЗМЕНЕНИЕ: Правильный путь к CSS -->
+    <title>CYOA AI Search v3</title>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
     <div class="main-container">
-        <h1>Семантический поиск по каталогу CYOA</h1>
+        <h1>CYOA Semantic Search (Text + AI Summary)</h1>
 
-        <!-- НОВЫЙ БЛОК: Статистика -->
         <div class="container" id="stats-container">
-            <p>Загрузка статистики...</p>
+            Loading stats...
         </div>
 
-        <!-- ИЗМЕНЕННЫЙ БЛОК: Поиск -->
-        <div class="container">
-            <h2>Поиск игр</h2>
+        <div class="container search-container">
             <form id="search-form">
-                <input type="text" id="search-query" placeholder="Введите поисковый запрос (например, 'космическая стратегия с торговлей')" required>
-                <button type="submit">Search</button>
+                <!-- ... ваша форма поиска остается без изменений ... -->
+                <div class="search-bar">
+                    <input type="text" id="search-query" placeholder="Describe game: e.g., 'isekai rpg with crafting', '#horror school setting'" required>
+                    <button type="submit">Search</button>
+                </div>
+                <div class="search-options">
+                    <label>Search Mode:</label>
+                    <label class="radio-label">
+                        <input type="radio" name="search-mode" value="mixed" checked> Mixed (Smart)
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="search-mode" value="summary"> Summary Only (Tags/Genre)
+                    </label>
+                    <label class="radio-label">
+                        <input type="radio" name="search-mode" value="text"> Raw Text Only
+                    </label>
+                </div>
             </form>
-            <h3>Search results:</h3>
-            <div id="search-results" class="results">
-                <p>Здесь появятся результаты поиска...</p>
-            </div>
         </div>
 
-        <!-- НОВЫЙ БЛОК: Список всех игр -->
-        <div class="container">
-            <h2>Все игры в базе (<span id="game-count">0</span>)</h2>
-            <div id="all-games-list" class="results">
-                 <p>Загрузка списка игр...</p>
+        <div class="container results-container">
+            <div id="search-results"></div>
+        </div>
+
+        <!-- ======== НОВЫЙ БЛОК ДЛЯ СПИСКА ИГР ======== -->
+        <div class="container" id="all-games-container">
+            <h2>All Games in Database</h2>
+            <div id="all-games-list">
+                <!-- Сюда будет динамически загружен список игр -->
+                <p>Loading game list...</p>
             </div>
         </div>
+        <!-- ============================================= -->
+
     </div>
 
-    <!-- ИЗМЕНЕНИЕ: Правильный путь к JS -->
     <script src="/static/script.js"></script>
 </body>
 </html>

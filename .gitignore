@@ -13,4 +13,12 @@ __pycache__/
 *.json
 
 
-indexer_vertex.py
+temp_indexer_vertex.py
+
+temp_add_game.py
+temp_migrate_add_summary.py
+temp_migrate_database.py
+temp_read_summary.py
+
+
+
