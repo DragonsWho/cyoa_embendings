@@ -1,4 +1,4 @@
-# indexer.py (новая, более надежная версия)
+# indexer.py (версия с тестовым режимом)
 import json
 import os
 import numpy as np
@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 import math
 from datetime import datetime
+import argparse # <-- 1. Импортируем argparse
 
 # --- Конфигурация ---
 load_dotenv()
@@ -50,11 +51,10 @@ def generate_embeddings_in_batches(texts):
     список индексов успешно обработанных чанков.
     """
     all_embeddings = []
-    successful_indices = [] 
-    
+    successful_indices = []
+
     num_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
-    
-    # i - это глобальный индекс начала батча в исходном списке `texts`
+
     for i in tqdm(range(0, len(texts), BATCH_SIZE), total=num_batches, desc="Генерация эмбеддингов"):
         batch_texts = texts[i:i + BATCH_SIZE]
         retries = 0
@@ -69,9 +69,8 @@ def generate_embeddings_in_batches(texts):
                     output_dimensionality=OUTPUT_DIMENSION,
                     request_options=request_options
                 )
-                
+
                 all_embeddings.extend(result['embedding'])
-                # Записываем глобальные индексы успешно обработанных чанков
                 successful_indices.extend(range(i, i + len(result['embedding'])))
                 success = True
                 break
@@ -80,26 +79,46 @@ def generate_embeddings_in_batches(texts):
                 print(f"\nОшибка при обработке батча (попытка {retries}/{MAX_RETRIES}): {e}")
                 if retries < MAX_RETRIES:
                     time.sleep(5 * retries)
-        
+
         if not success:
             print(f"Превышено количество попыток для батча, начинающегося с индекса {i}. Пропускаем.")
-            # Добавляем "пустышки" (None) для сбойных батчей, чтобы сохранить структуру
             all_embeddings.extend([None] * len(batch_texts))
 
     return all_embeddings, successful_indices
 
 
 def main():
+    # --- 2. Добавляем парсер аргументов командной строки ---
+    parser = argparse.ArgumentParser(description="Индексатор текстов игр для семантического поиска.")
+    parser.add_argument(
+        '--limit',
+        type=int,
+        default=None,
+        help="Ограничить индексацию указанным количеством игр (для тестирования)."
+    )
+    args = parser.parse_args()
+
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # Запрашиваем игры, которые еще не индексированы и у которых есть текст
+    # --- 3. Изменяем SQL-запрос для поддержки лимита ---
     print("Поиск игр для индексации...")
-    cursor.execute("""
+    
+    query = """
         SELECT pocketbase_id, title, full_text
         FROM games
         WHERE full_text IS NOT NULL AND full_text != '' AND last_indexed_at IS NULL
-    """)
+    """
+    params = []
+    
+    if args.limit:
+        print(f"\n--- РЕЖИМ ТЕСТИРОВАНИЯ: обрабатываем не более {args.limit} игр ---\n")
+        query += " LIMIT ?"
+        params.append(args.limit)
+
+    cursor.execute(query, params)
+    # --- Конец изменений ---
+
     games_to_index = [
         {"pocketbase_id": r[0], "title": r[1], "full_text": r[2]}
         for r in cursor.fetchall()
@@ -119,7 +138,7 @@ def main():
         {"pocketbase_id": r[0], "title": r[1], "full_text": r[2]}
         for r in cursor.fetchall()
     ]
-    
+
     all_chunks_texts, chunk_map = [], {}
     current_chunk_index = 0
     print(f"Подготовка чанков для {len(all_games_data)} игр...")
@@ -131,80 +150,91 @@ def main():
         for chunk_text_content in chunks:
             enriched_chunk = f"Из игры '{game['title']}': {chunk_text_content}"
             all_chunks_texts.append(enriched_chunk)
-            
+
             chunk_map[current_chunk_index] = {
                 "game_id": game['pocketbase_id'],
                 "text": chunk_text_content
             }
             current_chunk_index += 1
 
-    # --- Генерация эмбеддингов с обработкой ошибок ---
     all_embeddings, successful_indices = generate_embeddings_in_batches(all_chunks_texts)
 
     if not successful_indices:
         print("Не удалось сгенерировать ни одного эмбеддинга. Проверьте API ключ и квоты.")
         conn.close()
         return
-        
-    # --- Фильтруем данные, оставляя только успешные результаты ---
+
     final_embeddings = [all_embeddings[i] for i in successful_indices]
     final_embeddings_np = np.array(final_embeddings).astype('float32')
-    
+
     final_chunk_map = {}
     new_idx = 0
     for original_idx in successful_indices:
         final_chunk_map[new_idx] = chunk_map[original_idx]
         new_idx += 1
-    
+
     num_vectors, dim = final_embeddings_np.shape
     print(f"Успешно сгенерировано {num_vectors} векторов размерностью {dim}.")
 
-    # --- Создание и тренировка индекса Faiss ---
     nlist = int(math.sqrt(num_vectors))
     print(f"Выбрано {nlist} кластеров для индекса IVF.")
-    m = 16 
+    m = 16
     quantizer = faiss.IndexFlatL2(dim)
     index = faiss.IndexIVFPQ(quantizer, dim, nlist, m, 8)
-    
+
     print("Тренировка индекса... (это может занять некоторое время)")
     index.train(final_embeddings_np)
-    
+
     print("Добавление векторов в индекс...")
     index.add(final_embeddings_np)
-    
+
     print(f"Оптимизированный индекс создан. Всего векторов: {index.ntotal}")
-    
-    # --- Сохранение результатов ---
+
     faiss.write_index(index, OUTPUT_INDEX_FILE)
     with open(OUTPUT_MAPPING_FILE, 'w', encoding='utf-8') as f:
         json.dump(final_chunk_map, f, ensure_ascii=False, indent=2)
 
-    # --- Умное обновление статусов в базе данных ---
     print("\nИндексация успешно завершена! Обновление статусов в базе данных...")
-    
-    # 1. Собираем ID всех игр, чьи чанки попали в финальный индекс
-    game_ids_in_index = set(item['game_id'] for item in final_chunk_map.values())
-    
-    # 2. Помечаем как проиндексированные только те игры, что были в списке "к индексации"
-    #    И которые при этом попали в индекс.
-    ids_to_update = [
-        game['pocketbase_id'] for game in games_to_index 
-        if game['pocketbase_id'] in game_ids_in_index
-    ]
-    
+
+    game_chunk_counts = {}
+    for game in tqdm(games_to_index, desc="Подсчет исходных чанков"):
+        chunks = chunk_text(game['full_text'])
+        if not chunks: chunks = [game['full_text']]
+        game_chunk_counts[game['pocketbase_id']] = len(chunks)
+
+    successful_chunk_counts = {}
+    game_ids_to_index_set = {g['pocketbase_id'] for g in games_to_index}
+
+    for chunk_info in final_chunk_map.values():
+        game_id = chunk_info['game_id']
+        if game_id in game_ids_to_index_set:
+            successful_chunk_counts[game_id] = successful_chunk_counts.get(game_id, 0) + 1
+
+    ids_to_update = []
+    partially_indexed_count = 0
+    for game_id, total_chunks in game_chunk_counts.items():
+        successful_chunks = successful_chunk_counts.get(game_id, 0)
+
+        if total_chunks > 0 and total_chunks == successful_chunks:
+            ids_to_update.append(game_id)
+        elif successful_chunks < total_chunks:
+            partially_indexed_count += 1
+            print(f"INFO: Игра {game_id}: проиндексировано {successful_chunks}/{total_chunks} чанков. Статус не обновлен, будет повторная попытка.")
+
     if ids_to_update:
         placeholders = ', '.join('?' for _ in ids_to_update)
-        # Используем `DeprecationWarning` для совместимости с Python 3.12+
-        # Для старых версий можно оставить как было.
         current_time = datetime.now().isoformat()
         cursor.execute(
             f"UPDATE games SET last_indexed_at = ? WHERE pocketbase_id IN ({placeholders})",
             (current_time, *ids_to_update)
         )
         conn.commit()
-        print(f"{cursor.rowcount} игр помечены как проиндексированные.")
+        print(f"\n{cursor.rowcount} игр помечены как ПОЛНОСТЬЮ проиндексированные.")
     else:
-        print("Ни одна из новых игр не была проиндексирована из-за ошибок API.")
+        print("\nНи одна из новых игр не была полностью проиндексирована в этот раз.")
+
+    if partially_indexed_count > 0:
+        print(f"{partially_indexed_count} игр были проиндексированы частично и будут обработаны в следующий раз.")
 
     conn.close()
 
