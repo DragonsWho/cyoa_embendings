@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Панель управления поиском</title>
+    <!-- ИЗМЕНЕНИЕ: Правильный путь к CSS -->
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="main-container">
+        <h1>Семантический поиск по каталогу CYOA</h1>
+
+        <!-- НОВЫЙ БЛОК: Статистика -->
+        <div class="container" id="stats-container">
+            <p>Загрузка статистики...</p>
+        </div>
+
+        <!-- ИЗМЕНЕННЫЙ БЛОК: Поиск -->
+        <div class="container">
+            <h2>Поиск игр</h2>
+            <form id="search-form">
+                <input type="text" id="search-query" placeholder="Введите поисковый запрос (например, 'космическая стратегия с торговлей')" required>
+                <button type="submit">Search</button>
+            </form>
+            <h3>Search results:</h3>
+            <div id="search-results" class="results">
+                <p>Здесь появятся результаты поиска...</p>
+            </div>
+        </div>
+
+        <!-- НОВЫЙ БЛОК: Список всех игр -->
+        <div class="container">
+            <h2>Все игры в базе (<span id="game-count">0</span>)</h2>
+            <div id="all-games-list" class="results">
+                 <p>Загрузка списка игр...</p>
+            </div>
+        </div>
+    </div>
+
+    <!-- ИЗМЕНЕНИЕ: Правильный путь к JS -->
+    <script src="/static/script.js"></script>
+</body>
+</html>
