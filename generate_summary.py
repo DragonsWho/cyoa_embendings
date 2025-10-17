@@ -1,23 +1,19 @@
 # generate_summary.py
 import sqlite3
 import os
-import time
 import argparse
+import concurrent.futures
 from dotenv import load_dotenv
-from openai import OpenAI # <--- ИЗМЕНЕНИЕ: Используем библиотеку OpenAI
+from openai import OpenAI
 from tqdm import tqdm
 
 # --- Конфигурация ---
 load_dotenv()
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY") # <--- ИЗМЕНЕНИЕ: Ищем ключ OpenRouter
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("Не найден OPENROUTER_API_KEY в .env файле")
 
-# --- ИЗМЕНЕНИЕ: Укажите модель в формате OpenRouter ---
-# Вы можете выбрать любую подходящую модель из каталога OpenRouter
-# Например: 'google/gemini-1.5-pro-latest', 'google/gemini-flash-1.5', 
-# 'mistralai/mistral-large', 'anthropic/claude-3-haiku'
-GENERATION_MODEL_NAME = "deepseek/deepseek-v3.2-exp" 
+GENERATION_MODEL_NAME = "deepseek/deepseek-v3.2-exp"
 
 DB_FILE = "games.db"
 PROMPT_FILE = "summary_prompt.txt"
@@ -29,15 +25,20 @@ def load_prompt():
     with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
         return f.read().strip()
 
-def generate_summary_with_openrouter(client, model_name, base_prompt, game_text):
+# <--- ИЗМЕНЕНИЕ: Добавили 'game_title' для логирования ошибок --->
+def generate_summary_with_openrouter(client, model_name, base_prompt, game_title, game_text):
     """Отправляет текст игры в OpenRouter и получает описание."""
     try:
-        # Обрежем совсем гигантские тексты для экономии и стабильности
-        # Разные модели имеют разные лимиты, но 1М символов - разумный предел
-        max_chars = 1000000 
+        # <--- ИЗМЕНЕНИЕ: Уменьшаем лимит символов, чтобы вписаться в лимит токенов модели --->
+        # Лимит модели ~163k токенов. 500k символов это ~125k токенов, что безопасно.
+        max_chars = 500000
+        
+        if len(game_text) > max_chars:
+             # Логируем, что текст был обрезан
+             tqdm.write(f"  [INFO] Текст для '{game_title}' слишком длинный ({len(game_text)} симв.), обрезается до {max_chars}.")
+        
         truncated_text = game_text[:max_chars]
         
-        # --- ИЗМЕНЕНИЕ: Формируем запрос в формате OpenAI Chat Completions ---
         response = client.chat.completions.create(
             model=model_name,
             messages=[
@@ -50,22 +51,30 @@ def generate_summary_with_openrouter(client, model_name, base_prompt, game_text)
                     "content": f"Input Game Text:\n{truncated_text}"
                 }
             ],
-            temperature=0.2, # Низкая температура для более фактологичного описания
+            temperature=0.2,
         )
-        # --- ИЗМЕНЕНИЕ: Извлекаем ответ из структуры OpenAI ---
         return response.choices[0].message.content.strip()
     except Exception as e:
-        print(f"\nОшибка API OpenRouter при генерации описания: {e}")
-        return None
+        # Возвращаем ошибку, чтобы ее можно было обработать в главном потоке
+        return f"API_ERROR: {e}"
+
+def process_game(game_data, client, model_name, base_prompt):
+    """
+    Функция-обработчик для одной игры. Вызывается в отдельном потоке.
+    """
+    pb_id, title, full_text = game_data
+    # <--- ИЗМЕНЕНИЕ: Передаем 'title' в функцию генерации --->
+    summary = generate_summary_with_openrouter(client, model_name, base_prompt, title, full_text)
+    return pb_id, title, summary
 
 def main():
     parser = argparse.ArgumentParser(description="Генератор описаний игр с помощью OpenRouter.")
     parser.add_argument('--limit', type=int, default=None, help="Количество игр для обработки за один запуск.")
+    parser.add_argument('--workers', type=int, default=5, help="Количество параллельных потоков для запросов к API.")
     args = parser.parse_args()
 
     base_prompt = load_prompt()
 
-    # --- ИЗМЕНЕНИЕ: Инициализация клиента для OpenRouter ---
     client = OpenAI(
       base_url="https://openrouter.ai/api/v1",
       api_key=OPENROUTER_API_KEY,
@@ -74,7 +83,6 @@ def main():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # Запрос к БД остался без изменений
     query = """
         SELECT pocketbase_id, title, full_text 
         FROM games 
@@ -96,28 +104,30 @@ def main():
         return
 
     print(f"Найдено {len(games_to_process)} игр для генерации описаний с помощью {GENERATION_MODEL_NAME} через OpenRouter.")
+    print(f"Запускаем обработку в {args.workers} параллельных потоков...")
     
     success_count = 0
     
-    for pb_id, title, full_text in tqdm(games_to_process, desc="Генерация описаний"):
-        tqdm.write(f"Обработка: {title}...")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+        future_to_game = {
+            executor.submit(process_game, game, client, GENERATION_MODEL_NAME, base_prompt): game
+            for game in games_to_process
+        }
         
-        # --- ИЗМЕНЕНИЕ: Вызываем новую функцию ---
-        summary = generate_summary_with_openrouter(client, GENERATION_MODEL_NAME, base_prompt, full_text)
+        progress_bar = tqdm(concurrent.futures.as_completed(future_to_game), total=len(games_to_process), desc="Генерация описаний")
         
-        if summary:
-            # Логика сохранения в БД осталась без изменений
-            cursor.execute(
-                "UPDATE games SET summary = ?, last_indexed_at = NULL WHERE pocketbase_id = ?",
-                (summary, pb_id)
-            )
-            conn.commit()
-            success_count += 1
-            # Пауза, чтобы не попасть под rate limit. 
-            # Для бесплатных аккаунтов OpenRouter это может быть актуально.
-            time.sleep(2) 
-        else:
-            tqdm.write(f"  [FAIL] Не удалось сгенерировать описание для '{title}'")
+        for future in progress_bar:
+            pb_id, title, summary = future.result()
+            
+            if summary and not summary.startswith("API_ERROR:"):
+                cursor.execute(
+                    "UPDATE games SET summary = ?, last_indexed_at = NULL WHERE pocketbase_id = ?",
+                    (summary, pb_id)
+                )
+                conn.commit()
+                success_count += 1
+            else:
+                tqdm.write(f"\n[FAIL] Не удалось сгенерировать описание для '{title}'. Ошибка: {summary}")
 
     conn.close()
     print(f"\nЗавершено. Успешно сгенерировано описаний: {success_count}/{len(games_to_process)}.")

@@ -1,4 +1,4 @@
-# main.py (Финальная версия с продвинутым ранжированием)
+# main.py (Финальная версия с продвинутым ранжированием и ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ)
 import os
 import json
 import numpy as np
@@ -11,8 +11,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from typing import List, Dict, Any
 from enum import Enum
-from collections import defaultdict # <--- НОВЫЙ ИМПОРТ
-import math # <--- НОВЫЙ ИМПОРТ
+from collections import defaultdict
+import math
+import logging # <--- НОВЫЙ ИМПОРТ
 
 # --- Конфигурация ---
 load_dotenv()
@@ -26,22 +27,48 @@ INDEX_FILE = "games.index"
 MAPPING_FILE = "chunk_map.json"
 BASE_GAME_URL = "https://cyoa.cafe/games/"
 
-# --- НОВЫЕ ПАРАМЕТРЫ ДЛЯ РАНЖИРОВАНИЯ ---
-# Веса для финальной формулы. В сумме должны давать 1.0
-SUMMARY_WEIGHT = 0.70 # Описание - самый важный сигнал
-TEXT_WEIGHT = 0.30    # Плотность в тексте - вспомогательный сигнал
-
-# Фактор затухания для очков текстовых чанков. 
-# Чем ближе к 1, тем больше похоже на простое суммирование.
-# Чем меньше, тем важнее только самые топовые чанки. 0.85 - хороший баланс.
+# --- ПАРАМЕТРЫ ДЛЯ РАНЖИРОВАНИЯ ---
+SUMMARY_WEIGHT = 0.70 
+TEXT_WEIGHT = 0.30    
 DECAY_FACTOR = 0.85 
+
+# --- НОВАЯ СЕКЦИЯ: КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
+DEBUG_LOGGING = True  # Установите True для включения, False для выключения
+LOG_FILE = "search_debug.log"
+
+# Настраиваем логгер только если логирование включено
+if DEBUG_LOGGING:
+    # Используем getLogger, чтобы избежать проблем с uvicorn --reload
+    logger = logging.getLogger(__name__)
+    if not logger.handlers:
+        logger.setLevel(logging.INFO)
+        # Убираем все предыдущие обработчики
+        for handler in logger.handlers[:]:
+            logger.removeHandler(handler)
+        
+        # Создаем обработчик для файла
+        file_handler = logging.FileHandler(LOG_FILE, mode='a', encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
+        logger.addHandler(file_handler)
+
+        # Создаем обработчик для консоли (для удобства)
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter('%(message)s')) # Формат покороче для консоли
+        logger.addHandler(console_handler)
+else:
+    # Если логирование выключено, создаем "пустышку", чтобы код не падал
+    class DummyLogger:
+        def info(self, msg, *args, **kwargs): pass
+    logger = DummyLogger()
+# --- КОНЕЦ СЕКЦИИ ЛОГИРОВАНИЯ ---
+
 
 class SearchMode(str, Enum):
     mixed = "mixed"
     summary = "summary"
     text = "text"
 
-app = FastAPI(title="CYOA Semantic Search API v4 (Advanced Ranking)")
+app = FastAPI(title="CYOA Semantic Search API v4 (Advanced Ranking + Debug Logging)")
 
 # Глобальные переменные
 faiss_index = None
@@ -54,7 +81,6 @@ def load_data():
     if os.path.exists(INDEX_FILE) and os.path.exists(MAPPING_FILE):
         faiss_index = faiss.read_index(INDEX_FILE)
         with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
-            # Ключи JSON - строки, конвертируем в int
             chunk_map = {int(k): v for k, v in json.load(f).items()}
         print(f"Индекс загружен: {faiss_index.ntotal} векторов.")
     else:
@@ -64,14 +90,17 @@ def load_data():
 async def search_games(
     q: str = Query(..., min_length=2),
     mode: SearchMode = Query(SearchMode.mixed, description="Режим поиска: по тексту, по описанию или смешанный"),
-    k: int = 200, # Фаза 1: Ищем больше кандидатов (было 100)
-    threshold: float = 0.40 # Можно чуть снизить порог, т.к. re-ranking отсеет мусор
+    k: int = 200, 
+    threshold: float = 0.40 
 ):
     if not faiss_index or not chunk_map:
         raise HTTPException(status_code=503, detail="Индекс не готов.")
 
+    logger.info(f"\n{'='*25} НОВЫЙ ПОИСКОВЫЙ ЗАПРОС {'='*25}")
+    logger.info(f"Query: '{q}' | Mode: {mode} | k: {k} | threshold: {threshold}")
+    
     try:
-        # 1. Эмбеддинг запроса (без изменений)
+        # 1. Эмбеддинг запроса
         q_emb = genai.embed_content(
             model=f"models/{EMBEDDING_MODEL_NAME}",
             content=q,
@@ -81,16 +110,16 @@ async def search_games(
         q_vec = np.array([q_emb]).astype('float32')
         faiss.normalize_L2(q_vec)
 
-        # 2. Фаза 1: Retrieval - Поиск K ближайших ЧАНКОВ в Faiss
+        # 2. Фаза 1: Retrieval - Поиск K ближайших ЧАНКОВ
         D, I = faiss_index.search(q_vec, k)
         
         indices = I[0]
         scores = D[0]
+        logger.info(f"[Фаза 1] Поиск в Faiss. Найдено {len(indices)} потенциальных чанков-кандидатов.")
 
-        # 3. Агрегация данных по играм для re-ranking'а
-        # Вместо простого словаря, используем defaultdict для удобства
-        # Структура: { game_id: {"summary_scores": [0.85], "text_scores": [0.7, 0.65, ...]} }
-        game_data = defaultdict(lambda: {"summary_scores": [], "text_scores": [], "match_types": set()})
+        # 3. Агрегация данных по играм
+        # ИЗМЕНЕНО: Храним не просто очки, а целые объекты чанков для лога
+        game_data = defaultdict(lambda: {"summary_chunks": [], "text_chunks": []})
 
         for idx, raw_score in zip(indices, scores):
             if idx == -1 or raw_score < threshold: continue
@@ -101,61 +130,88 @@ async def search_games(
             game_id = chunk_info['game_id']
             chunk_type = chunk_info.get('type', 'text')
 
-            # Фильтрация по режиму (если выбран не mixed)
             if mode == SearchMode.summary and chunk_type != 'summary': continue
             if mode == SearchMode.text and chunk_type != 'text': continue
             
-            # Собираем все релевантные очки для каждой игры
+            # ИЗМЕНЕНО: Сохраняем словарь с нужной информацией
+            chunk_details = {
+                "score": float(raw_score),
+                "snippet": chunk_info.get('text_snippet', 'N/A')
+            }
+
             if chunk_type == 'summary':
-                game_data[game_id]["summary_scores"].append(float(raw_score))
+                game_data[game_id]["summary_chunks"].append(chunk_details)
             else:
-                game_data[game_id]["text_scores"].append(float(raw_score))
-            
-            game_data[game_id]["match_types"].add(chunk_type)
+                game_data[game_id]["text_chunks"].append(chunk_details)
 
         if not game_data:
+            logger.info("Порог релевантности не пройден ни одним чанком. Результатов нет.")
             return {"results": [], "mode_used": mode}
+        
+        logger.info(f"\n--- [Фаза 2] Агрегация чанков по {len(game_data)} играм ---")
+        for game_id, data in game_data.items():
+            logger.info(f"Игра ID: {game_id}")
+            for chunk in data['summary_chunks']:
+                logger.info(f"  [SUMMARY] Score: {chunk['score']:.4f} | Snippet: {chunk['snippet']}")
+            for chunk in data['text_chunks']:
+                logger.info(f"  [TEXT]    Score: {chunk['score']:.4f} | Snippet: {chunk['snippet']}")
 
         # 4. Фаза 2: Re-ranking - Применяем "Золотую формулу"
+        logger.info("\n--- [Фаза 3] Переранжирование и расчет 'Волшебной формулы' ---")
         final_game_scores = {}
 
         for game_id, data in game_data.items():
-            # Компонент A: Оценка по summary
-            # Берем максимальную оценку, если summary нашлось несколько (хотя обычно одно)
-            summary_score = max(data["summary_scores"] or [0])
-
-            # Компонент B: Оценка по тексту с затуханием
+            # ИЗМЕНЕНО: Извлекаем очки из новой структуры
+            summary_scores = [c['score'] for c in data['summary_chunks']]
+            text_scores = [c['score'] for c in data['text_chunks']]
+            
+            summary_score = max(summary_scores or [0])
+            
             text_score = 0
-            # Сортируем очки текстовых чанков по убыванию
-            sorted_text_scores = sorted(data["text_scores"], reverse=True)
-            # Применяем взвешенную сумму с затуханием
+            sorted_text_scores = sorted(text_scores, reverse=True)
             for i, score in enumerate(sorted_text_scores):
                 text_score += score * (DECAY_FACTOR ** i)
             
-            # Нормализация text_score, чтобы он не "взорвался" на длинных играх
-            # Используем гиперболический тангенс - он плавно сжимает любое число в диапазон [-1, 1]
-            # (в нашем случае, т.к. text_score > 0, диапазон будет [0, 1))
-            # Это не даст игре с 1000 упоминаний получить в 100 раз больше очков, чем игре с 10.
-            normalized_text_score = math.tanh(text_score / len(sorted_text_scores)) if sorted_text_scores else 0
+            # Мы просто берем логарифм от сырой суммы очков.
+            # Это поощрит игры с большим количеством совпадений, но нелинейно.
+            # Деление на константу (например, 5) нужно, чтобы результат был примерно в диапазоне 0-1 и сопоставим с summary_score.
+            # Эту константу можно будет тюнить.
+            normalizing_divisor = 5.0 
+            normalized_text_score = math.log1p(text_score) / normalizing_divisor if text_score > 0 else 0
 
-            # Финальная формула!
             final_score = (summary_score * SUMMARY_WEIGHT) + (normalized_text_score * TEXT_WEIGHT)
             
             final_game_scores[game_id] = {
                 "score": final_score,
-                # Определяем лучший тип совпадения для отображения в UI
                 "match_type": "summary" if summary_score > 0 else "text"
             }
             
-        # 5. Сортировка и выбор топ-результатов (теперь по final_score)
+            # НОВЫЙ БЛОК ЛОГИРОВАНИЯ РАСЧЕТОВ
+            log_msg = (
+                f"Расчет для игры ID: {game_id}\n"
+                f"  - Summary Scores: {[f'{s:.4f}' for s in summary_scores]}\n"
+                f"  - -> Max Summary Score (A): {summary_score:.4f}\n"
+                f"  - Text Scores (sorted): {[f'{s:.4f}' for s in sorted_text_scores]}\n"
+                f"  - -> Raw Text Score (decayed sum): {text_score:.4f}\n"
+                f"  - -> Normalized Text Score (B): {normalized_text_score:.4f}\n"
+                f"  >>> ИТОГОВАЯ ФОРМУЛА: (A * {SUMMARY_WEIGHT}) + (B * {TEXT_WEIGHT})\n"
+                f"  >>> РЕЗУЛЬТАТ: ({summary_score:.4f} * {SUMMARY_WEIGHT}) + ({normalized_text_score:.4f} * {TEXT_WEIGHT}) = {final_score:.4f}"
+            )
+            logger.info(log_msg)
+            
+        # 5. Сортировка и выбор топ-результатов
         sorted_games = sorted(final_game_scores.items(), key=lambda item: item[1]["score"], reverse=True)
         top_games = sorted_games[:20]
         top_game_ids = [g_id for g_id, data in top_games]
 
         if not top_game_ids:
             return {"results": [], "mode_used": mode}
+        
+        logger.info("\n--- [Фаза 4] Финальный топ-20 ---")
+        for i, (game_id, score_data) in enumerate(top_games):
+             logger.info(f"  #{i+1}: ID={game_id}, Final Score={score_data['score']:.4f}")
 
-        # 6. Получение метаданных из БД и формирование ответа (этот блок почти без изменений)
+        # 6. Получение метаданных из БД и формирование ответа
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         placeholders = ','.join('?' * len(top_game_ids))
@@ -166,14 +222,12 @@ async def search_games(
 
         game_meta_map = {row[0]: (row[1], row[2]) for row in rows}
         
-        # Строим ответ, сохраняя новый порядок сортировки
         results = []
         for game_id, score_data in top_games:
             if game_id in game_meta_map:
                 title, summary = game_meta_map[game_id]
                 summary_snippet = (summary[:200] + "...") if summary else ""
                 
-                # Нормализуем наш кастомный скор (который в диапазоне ~0-1) к 100-бальной шкале
                 display_score = min(int(score_data["score"] * 100), 100)
 
                 results.append({
@@ -184,11 +238,12 @@ async def search_games(
                     "match_type": score_data["match_type"],
                     "snippet": summary_snippet
                 })
-
+        
+        logger.info(f"{'='*28} КОНЕЦ ЗАПРОСА {'='*28}\n")
         return {"results": results, "mode_used": mode}
 
     except Exception as e:
-        print(f"Search Error: {e}")
+        logger.info(f"КРИТИЧЕСКАЯ ОШИБКА ПОИСКА: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Статика и вспомогательные роуты (без изменений) ---
