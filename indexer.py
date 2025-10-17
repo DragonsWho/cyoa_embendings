@@ -1,4 +1,4 @@
-# indexer.py (версия с тестовым режимом)
+# indexer.py (ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
 import json
 import os
 import numpy as np
@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 from tqdm import tqdm
 import math
 from datetime import datetime
-import argparse # <-- 1. Импортируем argparse
+import argparse
 
 # --- Конфигурация ---
 load_dotenv()
@@ -31,7 +31,6 @@ OUTPUT_INDEX_FILE = "games.index"
 OUTPUT_MAPPING_FILE = "chunk_map.json"
 
 def chunk_text(text, chunk_size=200, overlap=50):
-    """Нарезает текст на чанки с перекрытием."""
     words = text.split()
     if not words: return []
     chunks = []
@@ -45,16 +44,9 @@ def chunk_text(text, chunk_size=200, overlap=50):
     return chunks
 
 def generate_embeddings_in_batches(texts):
-    """
-    Генерирует эмбеддинги, отслеживая успешные и неудачные операции.
-    Возвращает список всех эмбеддингов (с None на месте сбоев) и
-    список индексов успешно обработанных чанков.
-    """
     all_embeddings = []
     successful_indices = []
-
     num_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
-
     for i in tqdm(range(0, len(texts), BATCH_SIZE), total=num_batches, desc="Генерация эмбеддингов"):
         batch_texts = texts[i:i + BATCH_SIZE]
         retries = 0
@@ -69,7 +61,6 @@ def generate_embeddings_in_batches(texts):
                     output_dimensionality=OUTPUT_DIMENSION,
                     request_options=request_options
                 )
-
                 all_embeddings.extend(result['embedding'])
                 successful_indices.extend(range(i, i + len(result['embedding'])))
                 success = True
@@ -79,21 +70,15 @@ def generate_embeddings_in_batches(texts):
                 print(f"\nОшибка при обработке батча (попытка {retries}/{MAX_RETRIES}): {e}")
                 if retries < MAX_RETRIES:
                     time.sleep(5 * retries)
-
         if not success:
             print(f"Превышено количество попыток для батча, начинающегося с индекса {i}. Пропускаем.")
             all_embeddings.extend([None] * len(batch_texts))
-
     return all_embeddings, successful_indices
 
-
 def main():
-    # --- 2. Добавляем парсер аргументов командной строки ---
     parser = argparse.ArgumentParser(description="Индексатор текстов игр для семантического поиска.")
     parser.add_argument(
-        '--limit',
-        type=int,
-        default=None,
+        '--limit', type=int, default=None,
         help="Ограничить индексацию указанным количеством игр (для тестирования)."
     )
     args = parser.parse_args()
@@ -101,28 +86,15 @@ def main():
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
 
-    # --- 3. Изменяем SQL-запрос для поддержки лимита ---
     print("Поиск игр для индексации...")
-    
-    query = """
-        SELECT pocketbase_id, title, full_text
-        FROM games
-        WHERE full_text IS NOT NULL AND full_text != '' AND last_indexed_at IS NULL
-    """
+    query = "SELECT pocketbase_id, title, full_text FROM games WHERE full_text IS NOT NULL AND full_text != '' AND last_indexed_at IS NULL"
     params = []
-    
     if args.limit:
         print(f"\n--- РЕЖИМ ТЕСТИРОВАНИЯ: обрабатываем не более {args.limit} игр ---\n")
         query += " LIMIT ?"
         params.append(args.limit)
-
     cursor.execute(query, params)
-    # --- Конец изменений ---
-
-    games_to_index = [
-        {"pocketbase_id": r[0], "title": r[1], "full_text": r[2]}
-        for r in cursor.fetchall()
-    ]
+    games_to_index = [{"pocketbase_id": r[0], "title": r[1], "full_text": r[2]} for r in cursor.fetchall()]
 
     if not games_to_index:
         print("Не найдено новых игр с текстом для индексации.")
@@ -131,29 +103,20 @@ def main():
 
     print(f"Найдено {len(games_to_index)} игр для индексации. Начинаем обработку...")
 
-    # Для качественной тренировки индекса PQ, мы строим его на основе ВСЕХ игр,
-    # у которых есть текст, включая уже проиндексированные.
     cursor.execute("SELECT pocketbase_id, title, full_text FROM games WHERE full_text IS NOT NULL AND full_text != ''")
-    all_games_data = [
-        {"pocketbase_id": r[0], "title": r[1], "full_text": r[2]}
-        for r in cursor.fetchall()
-    ]
+    all_games_data = [{"pocketbase_id": r[0], "title": r[1], "full_text": r[2]} for r in cursor.fetchall()]
 
     all_chunks_texts, chunk_map = [], {}
     current_chunk_index = 0
     print(f"Подготовка чанков для {len(all_games_data)} игр...")
-
     for game in tqdm(all_games_data, desc="Чанкинг игр"):
         chunks = chunk_text(game['full_text'])
         if not chunks: chunks = [game['full_text']]
-
         for chunk_text_content in chunks:
             enriched_chunk = f"Из игры '{game['title']}': {chunk_text_content}"
             all_chunks_texts.append(enriched_chunk)
-
             chunk_map[current_chunk_index] = {
-                "game_id": game['pocketbase_id'],
-                "text": chunk_text_content
+                "game_id": game['pocketbase_id'], "text": chunk_text_content
             }
             current_chunk_index += 1
 
@@ -176,19 +139,20 @@ def main():
     num_vectors, dim = final_embeddings_np.shape
     print(f"Успешно сгенерировано {num_vectors} векторов размерностью {dim}.")
 
-    nlist = int(math.sqrt(num_vectors))
-    print(f"Выбрано {nlist} кластеров для индекса IVF.")
-    m = 16
-    quantizer = faiss.IndexFlatL2(dim)
-    index = faiss.IndexIVFPQ(quantizer, dim, nlist, m, 8)
+    print("Нормализация векторов (L2)...")
+    faiss.normalize_L2(final_embeddings_np)
 
-    print("Тренировка индекса... (это может занять некоторое время)")
-    index.train(final_embeddings_np)
+    # --- ГЛАВНОЕ ИЗМЕНЕНИЕ: Заменяем сложный IndexIVFPQ на простой и точный IndexFlatIP ---
+    print("Создание точного индекса (IndexFlatIP)...")
+    index = faiss.IndexFlatIP(dim)
+    
+    # Тренировка больше не нужна для "плоского" индекса
+    # index.train(final_embeddings_np)
 
     print("Добавление векторов в индекс...")
     index.add(final_embeddings_np)
 
-    print(f"Оптимизированный индекс создан. Всего векторов: {index.ntotal}")
+    print(f"Точный индекс создан. Всего векторов: {index.ntotal}")
 
     faiss.write_index(index, OUTPUT_INDEX_FILE)
     with open(OUTPUT_MAPPING_FILE, 'w', encoding='utf-8') as f:
@@ -196,6 +160,7 @@ def main():
 
     print("\nИндексация успешно завершена! Обновление статусов в базе данных...")
 
+    # ... (остальная часть файла для обновления статусов в БД остается без изменений)
     game_chunk_counts = {}
     for game in tqdm(games_to_index, desc="Подсчет исходных чанков"):
         chunks = chunk_text(game['full_text'])
@@ -214,7 +179,6 @@ def main():
     partially_indexed_count = 0
     for game_id, total_chunks in game_chunk_counts.items():
         successful_chunks = successful_chunk_counts.get(game_id, 0)
-
         if total_chunks > 0 and total_chunks == successful_chunks:
             ids_to_update.append(game_id)
         elif successful_chunks < total_chunks:

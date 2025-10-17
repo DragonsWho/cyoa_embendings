@@ -1,4 +1,4 @@
-# main.py
+# main.py (ФИНАЛЬНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ)
 import os
 import json
 import numpy as np
@@ -23,7 +23,6 @@ if not GOOGLE_API_KEY:
 
 genai.configure(api_key=GOOGLE_API_KEY)
 MODEL_NAME = "gemini-embedding-001"
-# ВАЖНО: Эта размерность должна точно совпадать с той, что в indexer.py
 OUTPUT_DIMENSION = 256
 DB_FILE = "games.db"
 INDEX_FILE = "games.index"
@@ -32,8 +31,8 @@ BASE_GAME_URL = "https://cyoa.cafe/games/"
 
 app = FastAPI(
     title="CYOA Semantic Search API",
-    version="2.0.0",
-    description="API для семантического поиска по каталогу CYOA игр. Интегрирован с PocketBase."
+    version="2.5.0 (Stable)",
+    description="API для семантического поиска. Использует точный индекс Faiss IndexFlatIP."
 )
 
 # --- Глобальные переменные для хранения индекса и карты ---
@@ -42,10 +41,6 @@ chunk_map = {}
 
 @app.on_event("startup")
 def load_search_index():
-    """
-    Загружает индекс Faiss и карту чанков в память при старте сервера.
-    Это позволяет избежать чтения с диска при каждом поисковом запросе.
-    """
     global faiss_index, chunk_map
     print("Загрузка индекса Faiss и карты чанков...")
     
@@ -56,20 +51,18 @@ def load_search_index():
 
     try:
         faiss_index = faiss.read_index(INDEX_FILE)
-        # Устанавливаем nprobe - главный регулятор компромисса "скорость vs точность"
-        # Чем выше значение, тем точнее, но медленнее поиск. 10 - хороший старт.
-        faiss_index.nprobe = 10
-        print(f"Индекс '{INDEX_FILE}' успешно загружен. Всего векторов: {faiss_index.ntotal}")
+        # --- ИЗМЕНЕНИЕ: nprobe больше не нужен для 'плоского' индекса ---
+        # faiss_index.nprobe = 10 
+        print(f"Точный индекс '{INDEX_FILE}' успешно загружен. Всего векторов: {faiss_index.ntotal}")
 
         with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
             raw_map = json.load(f)
-            # Ключи в JSON всегда строки. Конвертируем их в int для прямого доступа по индексу.
             chunk_map = {int(k): v for k, v in raw_map.items()}
         print(f"Карта чанков '{MAPPING_FILE}' успешно загружена. Записей: {len(chunk_map)}")
 
     except Exception as e:
         print(f"КРИТИЧЕСКАЯ ОШИБКА: Не удалось загрузить индекс или карту чанков: {e}")
-        faiss_index = None # Сбрасываем, чтобы API корректно сообщал об ошибке
+        faiss_index = None
 
 @app.get("/search",
          summary="Поиск игр по текстовому запросу",
@@ -77,18 +70,9 @@ def load_search_index():
 async def search_games(
     q: str = Query(..., min_length=3, description="Текстовый поисковый запрос. Например, 'космические приключения с эльфами'"),
     k: int = Query(50, ge=1, le=100, description="Количество ближайших чанков для анализа."),
-    threshold: float = Query(0.72, ge=0.5, le=1.0, description="Порог релевантности. Результаты с оценкой ниже этого значения будут отброшены.")
+    # --- ИЗМЕНЕНИЕ: Устанавливаем более реалистичный порог по умолчанию ---
+    threshold: float = Query(0.4, ge=0.0, le=1.0, description="Порог релевантности (косинусное сходство). Результаты с оценкой ниже этого значения будут отброшены.")
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """
-    Выполняет семантический поиск по базе игр.
-    1. Преобразует текстовый запрос в вектор (эмбеддинг).
-    2. Находит `k` наиболее похожих векторов (чанков) в индексе Faiss.
-    3. Рассчитывает оценку релевантности по линейной формуле (1 - расстояние).
-    4. Отбрасывает результаты ниже порога `threshold`.
-    5. Агрегирует результаты по играм, выбирая лучший результат для каждой.
-    6. Обогащает результат данными (название, URL) из локальной SQLite базы.
-    7. Возвращает отсортированный список игр.
-    """
     if faiss_index is None or not chunk_map:
         raise HTTPException(
             status_code=503,
@@ -103,39 +87,34 @@ async def search_games(
             output_dimensionality=OUTPUT_DIMENSION
         )
         query_vector = np.array([query_embedding_result['embedding']]).astype('float32')
-        distances, indices = faiss_index.search(query_vector, k)
+        faiss.normalize_L2(query_vector)
+
+        scores, indices = faiss_index.search(query_vector, k)
         
         game_scores = {}
-        for dist, idx in zip(distances[0], indices[0]):
+        for score, idx in zip(scores[0], indices[0]):
             if idx == -1: continue
             
-            # --- ИЗМЕНЕНИЕ 1: Новая формула расчета очков ---
-            # Линейная шкала от 0 до 1. Гораздо нагляднее.
-            score = 1 - dist
-
-            # --- ИЗМЕНЕНИЕ 2: Отсечение по порогу релевантности ---
-            # Если результат нерелевантен, просто игнорируем его.
             if score < threshold:
-                continue
+                # Так как результаты теперь отсортированы правильно,
+                # можно прервать цикл, как только оценка стала слишком низкой.
+                break 
 
             chunk_info = chunk_map.get(int(idx))
             if not chunk_info: continue
             
             game_id = chunk_info["game_id"]
             
-            # Агрегируем, сохраняя лучший score для каждой игры
             if game_id not in game_scores or score > game_scores[game_id]:
-                game_scores[game_id] = score
+                game_scores[game_id] = float(score)
         
         if not game_scores:
             return {"results": []}
 
-        # Сортируем ID игр по убыванию их лучшего score
         sorted_game_ids = [
             item[0] for item in sorted(game_scores.items(), key=lambda item: item[1], reverse=True)
         ]
         
-        # --- Обогащение результатов данными (этот блок без изменений) ---
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         
@@ -150,7 +129,6 @@ async def search_games(
         games_metadata = {row[0]: {"title": row[1]} for row in cursor.fetchall()}
         conn.close()
 
-        # Формируем финальный красивый ответ
         results = []
         for game_id in sorted_game_ids[:10]:
             meta = games_metadata.get(game_id)
@@ -160,7 +138,6 @@ async def search_games(
                 "id": game_id,
                 "title": meta["title"],
                 "url": f"{BASE_GAME_URL}{game_id}",
-                # --- ИЗМЕНЕНИЕ 3: Приводим score к процентам ---
                 "score": int(game_scores[game_id] * 100)
             })
 
@@ -170,13 +147,13 @@ async def search_games(
         raise HTTPException(status_code=500, detail=f"Внутренняя ошибка сервера при обработке запроса: {e}")
 
 
+# --- Остальная часть файла без изменений ---
 class GameInfo(BaseModel):
     id: str
     title: str
 
 @app.get("/stats", summary="Получить статистику по базе данных")
 async def get_stats():
-    """Возвращает общее количество игр в локальной базе."""
     try:
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
@@ -191,10 +168,8 @@ async def get_stats():
 
 @app.get("/games", summary="Получить список всех игр", response_model=List[GameInfo])
 async def get_all_games():
-    """Возвращает список всех игр (ID и название) из локальной базы."""
     try:
         conn = sqlite3.connect(DB_FILE)
-        # Указываем, что хотим получать результаты как словари
         conn.row_factory = sqlite3.Row 
         cursor = conn.cursor()
         cursor.execute("SELECT pocketbase_id as id, title FROM games ORDER BY title ASC")
@@ -204,10 +179,8 @@ async def get_all_games():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Ошибка чтения базы данных: {e}")
     
-# Монтируем статические файлы для простого UI
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 @app.get("/", response_class=FileResponse, include_in_schema=False)
 async def read_root():
-    """Отдает главную страницу с интерфейсом поиска."""
     return "static/index.html"
