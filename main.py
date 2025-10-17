@@ -1,4 +1,4 @@
-# main.py (Финальная версия с продвинутым ранжированием и ДЕТАЛЬНЫМ ЛОГИРОВАНИЕМ)
+# main.py (Финальная версия с продвинутым ранжированием и ЛОГИРОВАНИЕМ ЗАПРОСОВ)
 import os
 import json
 import numpy as np
@@ -12,8 +12,9 @@ from fastapi.responses import FileResponse
 from typing import List, Dict, Any
 from enum import Enum
 from collections import defaultdict
+from datetime import datetime # <--- НОВЫЙ ИМПОРТ
 import math
-import logging # <--- НОВЫЙ ИМПОРТ
+import logging
 
 # --- Конфигурация ---
 load_dotenv()
@@ -25,15 +26,16 @@ OUTPUT_DIMENSION = 256
 DB_FILE = "games.db"
 INDEX_FILE = "games.index"
 MAPPING_FILE = "chunk_map.json"
-BASE_GAME_URL = "https://cyoa.cafe/games/"
+BASE_GAME_URL = "https://cyoa.cafe/game/"
 
 # --- ПАРАМЕТРЫ ДЛЯ РАНЖИРОВАНИЯ ---
 SUMMARY_WEIGHT = 0.70 
 TEXT_WEIGHT = 0.30    
 DECAY_FACTOR = 0.85 
 
-# --- НОВАЯ СЕКЦИЯ: КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
-DEBUG_LOGGING = True  # Установите True для включения, False для выключения
+# --- СЕКЦИЯ: КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
+# --- ИЗМЕНЕНИЕ: Отключаем детальное логгирование для продакшена ---
+DEBUG_LOGGING = False
 LOG_FILE = "search_debug.log"
 
 # Настраиваем логгер только если логирование включено
@@ -60,6 +62,25 @@ else:
     class DummyLogger:
         def info(self, msg, *args, **kwargs): pass
     logger = DummyLogger()
+
+# --- НОВЫЙ БЛОК: ЛОГИРОВАНИЕ ЗАПРОСОВ ПОЛЬЗОВАТЕЛЕЙ ДЛЯ АНАЛИТИКИ ---
+QUERY_LOG_FILE = "user_queries.jsonl"
+
+# Настраиваем специальный логгер для сохранения запросов в виде JSON
+query_logger = logging.getLogger('user_queries')
+query_logger.setLevel(logging.INFO)
+
+# Убираем обработчики по умолчанию, чтобы избежать дублирования вывода в консоль
+query_logger.propagate = False
+
+# Добавляем файловый обработчик, если его еще нет
+if not query_logger.handlers:
+    # Используем mode='a' для дозаписи в файл
+    query_handler = logging.FileHandler(QUERY_LOG_FILE, mode='a', encoding='utf-8')
+    # Форматтер выводит только само сообщение, т.к. мы передаем готовую JSON-строку
+    query_handler.setFormatter(logging.Formatter('%(message)s'))
+    query_logger.addHandler(query_handler)
+# --- КОНЕЦ НОВОГО БЛОКА ---
 # --- КОНЕЦ СЕКЦИИ ЛОГИРОВАНИЯ ---
 
 
@@ -68,7 +89,7 @@ class SearchMode(str, Enum):
     summary = "summary"
     text = "text"
 
-app = FastAPI(title="CYOA Semantic Search API v4 (Advanced Ranking + Debug Logging)")
+app = FastAPI(title="CYOA Semantic Search API v5 (User Query Logging)")
 
 # Глобальные переменные
 faiss_index = None
@@ -118,7 +139,6 @@ async def search_games(
         logger.info(f"[Фаза 1] Поиск в Faiss. Найдено {len(indices)} потенциальных чанков-кандидатов.")
 
         # 3. Агрегация данных по играм
-        # ИЗМЕНЕНО: Храним не просто очки, а целые объекты чанков для лога
         game_data = defaultdict(lambda: {"summary_chunks": [], "text_chunks": []})
 
         for idx, raw_score in zip(indices, scores):
@@ -133,7 +153,6 @@ async def search_games(
             if mode == SearchMode.summary and chunk_type != 'summary': continue
             if mode == SearchMode.text and chunk_type != 'text': continue
             
-            # ИЗМЕНЕНО: Сохраняем словарь с нужной информацией
             chunk_details = {
                 "score": float(raw_score),
                 "snippet": chunk_info.get('text_snippet', 'N/A')
@@ -161,7 +180,6 @@ async def search_games(
         final_game_scores = {}
 
         for game_id, data in game_data.items():
-            # ИЗМЕНЕНО: Извлекаем очки из новой структуры
             summary_scores = [c['score'] for c in data['summary_chunks']]
             text_scores = [c['score'] for c in data['text_chunks']]
             
@@ -172,10 +190,6 @@ async def search_games(
             for i, score in enumerate(sorted_text_scores):
                 text_score += score * (DECAY_FACTOR ** i)
             
-            # Мы просто берем логарифм от сырой суммы очков.
-            # Это поощрит игры с большим количеством совпадений, но нелинейно.
-            # Деление на константу (например, 5) нужно, чтобы результат был примерно в диапазоне 0-1 и сопоставим с summary_score.
-            # Эту константу можно будет тюнить.
             normalizing_divisor = 5.0 
             normalized_text_score = math.log1p(text_score) / normalizing_divisor if text_score > 0 else 0
 
@@ -186,7 +200,6 @@ async def search_games(
                 "match_type": "summary" if summary_score > 0 else "text"
             }
             
-            # НОВЫЙ БЛОК ЛОГИРОВАНИЯ РАСЧЕТОВ
             log_msg = (
                 f"Расчет для игры ID: {game_id}\n"
                 f"  - Summary Scores: {[f'{s:.4f}' for s in summary_scores]}\n"
@@ -239,11 +252,42 @@ async def search_games(
                     "snippet": summary_snippet
                 })
         
+        # --- НОВЫЙ БЛОК: Компактное логирование запроса и результатов ---
+        try:
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "query": q,
+                "mode": mode.value,
+                "results_count": len(results),
+                "top_results": [
+                    {"id": r["id"], "title": r["title"], "score": r["score"]} 
+                    for r in results[:3]
+                ]
+            }
+            # Преобразуем в JSON и записываем в лог
+            query_logger.info(json.dumps(log_entry, ensure_ascii=False))
+        except Exception as log_e:
+            # Не ломаем ответ пользователю, если логирование упало.
+            print(f"ERROR: Could not write user query to log: {log_e}")
+        # --- КОНЕЦ НОВОГО БЛОКА ---
+        
         logger.info(f"{'='*28} КОНЕЦ ЗАПРОСА {'='*28}\n")
         return {"results": results, "mode_used": mode}
 
     except Exception as e:
         logger.info(f"КРИТИЧЕСКАЯ ОШИБКА ПОИСКА: {e}")
+        # --- НОВЫЙ БЛОК: Логируем также и ошибку в файл запросов ---
+        try:
+            log_entry = {
+                "timestamp": datetime.now().isoformat(),
+                "query": q,
+                "mode": mode.value,
+                "error": str(e)
+            }
+            query_logger.info(json.dumps(log_entry, ensure_ascii=False))
+        except Exception as log_e:
+             print(f"ERROR: Could not write user query error to log: {log_e}")
+        # --- КОНЕЦ НОВОГО БЛОКА ---
         raise HTTPException(status_code=500, detail=str(e))
 
 # --- Статика и вспомогательные роуты (без изменений) ---
