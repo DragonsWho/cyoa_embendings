@@ -1,4 +1,4 @@
-# indexer.py (Версия с поддержкой Summary)
+# indexer.py (Версия с поддержкой Summary и паузой между запросами)
 import json
 import os
 import numpy as np
@@ -23,13 +23,14 @@ EMBEDDING_MODEL_NAME = "gemini-embedding-001"
 OUTPUT_DIMENSION = 256
 BATCH_SIZE = 100 # Можно увеличить для embedding-001
 MAX_RETRIES = 3
+API_REQUEST_DELAY = 3 # Пауза в секундах между API запросами для избежания rate limit
 
 # --- Пути к файлам ---
 DB_FILE = "games.db"
 OUTPUT_INDEX_FILE = "games.index"
 OUTPUT_MAPPING_FILE = "chunk_map.json"
 
-def chunk_raw_text(text, chunk_size=300, overlap=50):
+def chunk_raw_text(text, chunk_size=500, overlap=50):
     """Разбивает сырой текст игры на чанки."""
     words = text.split()
     if not words: return []
@@ -84,6 +85,11 @@ def generate_embeddings_in_batches(texts):
         if not success:
              # Заполняем None, чтобы сохранить индексацию списка texts
              all_embeddings.extend([None] * len(batch_texts))
+
+        # Добавляем паузу после обработки каждого батча, чтобы не превышать лимиты API.
+        # Небольшая оптимизация: не ждем после самого последнего батча.
+        if i + BATCH_SIZE < len(texts):
+            time.sleep(API_REQUEST_DELAY)
 
     return all_embeddings, successful_indices
 
