@@ -1,6 +1,7 @@
 # sync_with_pocketbase.py (обновленная версия)
 import os
 import sqlite3
+import json # Импортируем json для работы со списком ссылок
 from dotenv import load_dotenv
 from pocketbase import PocketBase
 
@@ -17,7 +18,7 @@ def sync_games():
 
     try:
         client = PocketBase(POCKETBASE_URL)
-        admin_data = client.admins.auth_with_password(ADMIN_EMAIL, ADMIN_PASSWORD)
+        client.admins.auth_with_password(ADMIN_EMAIL, ADMIN_PASSWORD)
         print("Успешная аутентификация в PocketBase.")
     except Exception as e:
         print(f"Ошибка аутентификации в PocketBase: {e}")
@@ -27,7 +28,7 @@ def sync_games():
     cursor = conn.cursor()
 
     try:
-        all_pb_games = client.collection("games").get_full_list(batch=200)
+        all_pb_games = client.collection("games").get_full_list(batch=200, query_params={"sort": "-created"})
         print(f"Из PocketBase получено {len(all_pb_games)} игр.")
     except Exception as e:
         print(f"Ошибка при получении списка игр из PocketBase: {e}")
@@ -35,15 +36,42 @@ def sync_games():
         return
 
     added_count = 0
+    updated_count = 0
     for game in all_pb_games:
         try:
-            # ИЗМЕНЕНИЕ: Теперь мы вставляем и original_url, который берем из поля iframe_url
+            # Сначала добавляем только базовые поля для всех игр
             cursor.execute(
-                "INSERT OR IGNORE INTO games (pocketbase_id, title, original_url) VALUES (?, ?, ?)",
-                (game.id, game.title, game.iframe_url)
+                "INSERT OR IGNORE INTO games (pocketbase_id, title) VALUES (?, ?)",
+                (game.id, game.title)
             )
             if cursor.rowcount > 0:
                 added_count += 1
+
+            # НОВАЯ ЛОГИКА: Определяем тип и заполняем нужные поля
+            # Тип 1: Интерактивная CYOA (ссылка)
+            if game.img_or_link == 'link' and game.iframe_url:
+                cursor.execute(
+                    "UPDATE games SET original_url = ? WHERE pocketbase_id = ?",
+                    (game.iframe_url, game.id)
+                )
+                if cursor.rowcount > 0: updated_count += 1
+            
+            # Тип 2: Статичная CYOA (картинки)
+            elif game.img_or_link == 'img' and game.cyoa_pages:
+                image_urls = []
+                # Собираем полные URL для каждого файла, сохраняя порядок
+                for filename in game.cyoa_pages:
+                    url = f"{POCKETBASE_URL}/api/files/{game.collection_id}/{game.id}/{filename}"
+                    image_urls.append(url)
+                
+                # Конвертируем список в JSON-строку и сохраняем
+                image_urls_json = json.dumps(image_urls)
+                cursor.execute(
+                    "UPDATE games SET image_urls = ? WHERE pocketbase_id = ?",
+                    (image_urls_json, game.id)
+                )
+                if cursor.rowcount > 0: updated_count += 1
+
         except Exception as e:
             print(f"Не удалось обработать игру {game.id} ({game.title}): {e}")
 
@@ -52,11 +80,9 @@ def sync_games():
     
     print("-" * 20)
     print("Синхронизация завершена.")
-    if added_count > 0:
-        print(f"Добавлено {added_count} новых игр в локальную базу с URL-оригиналами.")
-        print("Теперь можно запустить fetch_game_text.py!")
-    else:
-        print("Новых игр не найдено.")
+    print(f"Добавлено {added_count} новых игр.")
+    print(f"Обновлено {updated_count} записей с URL-ами.")
+    print("Теперь можно запускать скрипты обработки!")
 
 if __name__ == "__main__":
     sync_games()

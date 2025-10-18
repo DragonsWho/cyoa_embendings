@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
         resultsDiv.innerHTML = '<p>Searching analyzing semantics...</p>';
 
         try {
-            const res = await fetch(`/search?q=${encodeURIComponent(query)}&mode=${mode}`);
+            const res = await fetch(`/api/semantic-search?q=${encodeURIComponent(query)}&mode=${mode}`);
             const data = await res.json();
 
             if (data.results.length === 0) {

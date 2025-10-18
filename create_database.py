@@ -15,12 +15,12 @@ def create_database():
         conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
 
-        # ИЗМЕНЕНИЕ: Добавлено поле summary TEXT
         cursor.execute('''
         CREATE TABLE games (
             pocketbase_id TEXT PRIMARY KEY,
             title TEXT NOT NULL,
-            original_url TEXT, 
+            original_url TEXT, -- Для интерактивных CYOA (iframe_url)
+            image_urls TEXT,   -- НОВОЕ ПОЛЕ: для JSON-списка URL-ов статичных CYOA
             full_text TEXT,
             summary TEXT,
             source_hash TEXT,
@@ -31,10 +31,12 @@ def create_database():
 
         conn.commit()
         conn.close()
-        print(f"База данных '{DB_FILE}' успешно создана с колонкой 'summary'.")
+        print(f"База данных '{DB_FILE}' успешно создана с колонкой 'image_urls'.")
 
     except Exception as e:
         print(f"Произошла ошибка при создании базы данных: {e}")
 
-if __name__ == "__main__": 
+if __name__ == "__main__":
+    # Перед первым запуском новых скриптов, удалите старый games.db
+    # и выполните этот файл, чтобы создать базу с новой структурой.
     create_database()
