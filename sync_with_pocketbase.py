@@ -3,9 +3,9 @@ import os
 import sqlite3
 import json
 from dotenv import load_dotenv
-# ИСПОЛЬЗУЕМ СТАРЫЙ, ПРОВЕРЕННЫЙ ИМПОРТ
-from pocketbase import PocketBase
- 
+# --- ИСПРАВЛЕНИЕ: Возвращаем импорт, совместимый с твоей версией библиотеки ---
+# Мы импортируем класс 'Client' и даем ему псевдоним 'PocketBase' для единообразия.
+from pocketbase.client import Client as PocketBase
 # --- Конфигурация ---
 load_dotenv()
 DB_FILE = "games.db"
@@ -18,7 +18,7 @@ def sync_games():
     print("Начинаем синхронизацию с PocketBase...")
 
     try:
-        # ИСПОЛЬЗУЕМ СТАРЫЙ, РАБОЧИЙ СПОСОБ АУТЕНТИФИКАЦИИ
+        # Создаем клиент и используем рабочий способ аутентификации
         client = PocketBase(POCKETBASE_URL)
         client.auth_with_password(ADMIN_EMAIL, ADMIN_PASSWORD)
         print("Успешная аутентификация в PocketBase.")
