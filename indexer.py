@@ -4,6 +4,7 @@ import os
 import numpy as np
 import faiss
 import google.generativeai as genai
+import argparse
 import sqlite3
 import time
 from dotenv import load_dotenv
@@ -82,24 +83,47 @@ def generate_embeddings_in_batches(texts):
 
     return all_embeddings, successful_indices
 
-def main():
-    # Мы всегда пересоздаем индекс целиком для простоты и надежности (Faiss FlatIP быстрый)
-    print("Подготовка к полной переиндексации...")
+def main(full_reindex=False):
+    """
+    Главная функция индексации.
+    :param full_reindex: Если True, выполняет полную переиндексацию.
+                         Если False (по умолчанию), выполняет инкрементальную индексацию.
+    """
+    is_incremental = not full_reindex
 
     conn = sqlite3.connect(config.DB_FILE)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
-    # Берем ВСЕ игры, у которых есть хоть что-то (текст или саммари)
-    cursor.execute("""
-        SELECT pocketbase_id, title, full_text, summary 
-        FROM games 
-        WHERE (full_text IS NOT NULL AND full_text != '') OR (summary IS NOT NULL AND summary != '')
-    """)
+    if is_incremental and os.path.exists(config.INDEX_FILE):
+        print("--- Режим: Инкрементальная индексация ---")
+        # Выбираем только те игры, которые еще не были проиндексированы
+        cursor.execute("""
+            SELECT pocketbase_id, title, full_text, summary 
+            FROM games 
+            WHERE last_indexed_at IS NULL 
+            AND ((full_text IS NOT NULL AND full_text != '') OR (summary IS NOT NULL AND summary != ''))
+        """)
+    else:
+        if is_incremental:
+            print("Файл индекса не найден. Выполняется первичная полная индексация.")
+        else:
+            print("--- Режим: Полная переиндексация ---")
+        full_reindex = True # Принудительно включаем полный режим
+        is_incremental = False
+        # Берем ВСЕ игры, у которых есть хоть что-то (текст или саммари)
+        cursor.execute("""
+            SELECT pocketbase_id, title, full_text, summary 
+            FROM games 
+            WHERE (full_text IS NOT NULL AND full_text != '') OR (summary IS NOT NULL AND summary != '')
+        """)
+
     all_games = cursor.fetchall()
 
     if not all_games:
-        print("В базе нет данных для индексации.")
+        print("Не найдено игр для индексации.")
+        if is_incremental:
+            print("Все игры уже проиндексированы.")
         conn.close()
         return
 
@@ -107,6 +131,28 @@ def main():
 
     texts_to_embed = []
     temp_chunk_map = [] # Список словарей метаданных
+
+    # Если это инкрементальное обновление, нам нужно удалить старые чанки для обновляемых игр
+    if is_incremental:
+        game_ids_to_update = {game['pocketbase_id'] for game in all_games}
+        print(f"Будут обновлены данные для {len(game_ids_to_update)} игр.")
+        
+        # Загружаем старую карту, чтобы найти ID для удаления
+        with open(config.MAPPING_FILE, 'r', encoding='utf-8') as f:
+            old_chunk_map = {int(k): v for k, v in json.load(f).items()}
+        
+        ids_to_remove = [
+            faiss_id for faiss_id, meta in old_chunk_map.items() 
+            if meta['game_id'] in game_ids_to_update
+        ]
+        
+        if ids_to_remove:
+            print(f"Найдено {len(ids_to_remove)} старых чанков для удаления из индекса.")
+            # Faiss не поддерживает эффективное удаление из IndexFlatIP.
+            # Проще и надежнее сделать полную переиндексацию.
+            print("Внимание: Обнаружены игры для обновления. Для обеспечения целостности данных будет выполнена полная переиндексация.")
+            full_reindex = True
+            return main(full_reindex=True) # Рекурсивный вызов в режиме полной переиндексации
 
     for game in tqdm(all_games, desc="Чанкинг"):
         game_id = game['pocketbase_id']
@@ -146,34 +192,55 @@ def main():
         conn.close()
         return
 
-    # Фильтруем и сопоставляем
-    final_embeddings = []
-    final_chunk_map = {}
-    
-    faiss_index_id = 0
-    for original_idx in successful_indices:
-        emb = raw_embeddings[original_idx]
-        if emb is None: continue # Пропуск ошибок
-        
-        final_embeddings.append(emb)
-        # Сохраняем метаданные под новым непрерывным ID для Faiss
-        final_chunk_map[faiss_index_id] = temp_chunk_map[original_idx]
-        faiss_index_id += 1
-
-    # --- Создание индекса Faiss ---
-    embeddings_np = np.array(final_embeddings).astype('float32')
+    # --- Создание/обновление индекса Faiss ---
+    new_embeddings = [raw_embeddings[i] for i in successful_indices if raw_embeddings[i] is not None]
+    embeddings_np = np.array(new_embeddings).astype('float32')
     print("Нормализация векторов (L2) для Cosine Similarity...")
     faiss.normalize_L2(embeddings_np)
 
-    print(f"Создание IndexFlatIP для {len(embeddings_np)} векторов...")
-    index = faiss.IndexFlatIP(config.OUTPUT_DIMENSION)
-    index.add(embeddings_np)
+    if full_reindex:
+        print(f"Создание нового IndexFlatIP для {len(embeddings_np)} векторов...")
+        index = faiss.IndexFlatIP(config.OUTPUT_DIMENSION)
+        index.add(embeddings_np)
+        
+        # Создаем новую карту чанков
+        final_chunk_map = {}
+        successful_chunks = [temp_chunk_map[i] for i in successful_indices if raw_embeddings[i] is not None]
+        for i, chunk_meta in enumerate(successful_chunks):
+            final_chunk_map[i] = chunk_meta
+    else: # Инкрементальный режим (только добавление)
+        print("Загрузка существующего индекса для добавления данных...")
+        index = faiss.read_index(config.INDEX_FILE)
+        with open(config.MAPPING_FILE, 'r', encoding='utf-8') as f:
+            final_chunk_map = {int(k): v for k, v in json.load(f).items()}
+
+        start_id = index.ntotal
+        print(f"Индекс содержит {start_id} векторов. Добавляем {len(embeddings_np)} новых...")
+        index.add(embeddings_np)
+
+        # Добавляем новые метаданные в карту
+        successful_chunks = [temp_chunk_map[i] for i in successful_indices if raw_embeddings[i] is not None]
+        for i, chunk_meta in enumerate(successful_chunks):
+            final_chunk_map[start_id + i] = chunk_meta
 
     # --- Сохранение результатов ---
     print("Сохранение индекса и карты...")
     faiss.write_index(index, config.INDEX_FILE)
     with open(config.MAPPING_FILE, 'w', encoding='utf-8') as f:
         json.dump(final_chunk_map, f, ensure_ascii=False, indent=2)
+
+    # --- Обновление статусов в БД ---
+    # В любом случае, мы обновляем статус для тех игр, что обработали в этом запуске
+    processed_game_ids = {game['pocketbase_id'] for game in all_games}
+    if processed_game_ids:
+        current_time = datetime.now().isoformat()
+        placeholders = ', '.join('?' for _ in processed_game_ids)
+        cursor.execute(
+            f"UPDATE games SET last_indexed_at = ? WHERE pocketbase_id IN ({placeholders})",
+            (current_time, *processed_game_ids)
+        )
+        conn.commit()
+        print(f"Обновлен статус для {len(processed_game_ids)} игр.")
 
     # --- Обновление статусов в БД ---
     print("Обновление статуса индексации в базе данных...")
@@ -193,4 +260,11 @@ def main():
     print("\n--- Индексация полностью завершена ---")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Индексатор текста и описаний игр для семантического поиска.")
+    parser.add_argument(
+        '--full',
+        action='store_true',
+        help="Выполнить полную переиндексацию всех данных, удалив старый индекс."
+    )
+    args = parser.parse_args()
+    main(full_reindex=args.full)
