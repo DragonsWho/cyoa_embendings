@@ -18,9 +18,9 @@ def sync_games():
     print("Начинаем синхронизацию с PocketBase...")
 
     try:
-        # Создаем клиент и используем рабочий способ аутентификации
+        # Создаем клиент и используем ПРАВИЛЬНЫЙ способ аутентификации АДМИНИСТРАТОРА
         client = PocketBase(POCKETBASE_URL)
-        client.auth_with_password(ADMIN_EMAIL, ADMIN_PASSWORD)
+        client.admins.auth_with_password(ADMIN_EMAIL, ADMIN_PASSWORD)
         print("Успешная аутентификация в PocketBase.")
     except Exception as e:
         print(f"Ошибка аутентификации в PocketBase: {e}")
