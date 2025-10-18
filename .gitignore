@@ -6,11 +6,12 @@ __pycache__/
 
 # Секреты
 .env
+gcp-credentials.json
 
 # База данных и сгенерированные индексы
-*.db
-*.index
-*.json
+# *.db
+# *.index
+#  *.json
 *.jsonl
 
 temp_indexer_vertex.py

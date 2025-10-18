@@ -36,5 +36,5 @@ def create_database():
     except Exception as e:
         print(f"Произошла ошибка при создании базы данных: {e}")
 
-if __name__ == "__main__":
+if __name__ == "__main__": 
     create_database()
