@@ -15,6 +15,7 @@ from collections import defaultdict
 from datetime import datetime # <--- НОВЫЙ ИМПОРТ
 import math
 import logging
+from fastapi.middleware.cors import CORSMiddleware 
 
 # --- Конфигурация ---
 load_dotenv()
@@ -91,7 +92,23 @@ class SearchMode(str, Enum):
 
 app = FastAPI(title="CYOA Semantic Search API v5 (User Query Logging)")
 
-# Глобальные переменные
+
+# Настройка CORS
+origins = [
+    "https://cyoa.cafe",      # Адрес твоего основного сайта
+    "http://localhost:5173", # Адрес для локальной разработки React (порт может быть другим)
+    "http://127.0.0.1:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"], # Разрешить все методы (GET, POST и т.д.)
+    allow_headers=["*"], # Разрешить все заголовки
+)
+
+# Глобальные переменные    
 faiss_index = None
 chunk_map = {}
 
@@ -107,7 +124,8 @@ def load_data():
     else:
         print("WARN: Файлы индекса не найдены. Поиск не будет работать.")
 
-@app.get("/search")
+@app.get("/api/semantic-search")
+
 async def search_games(
     q: str = Query(..., min_length=2),
     mode: SearchMode = Query(SearchMode.mixed, description="Режим поиска: по тексту, по описанию или смешанный"),

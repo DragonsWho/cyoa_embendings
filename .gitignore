@@ -24,3 +24,7 @@ temp_read_summary.py
 
 # Лог-файлы
 *.log
+
+todo
+
+semantic-search-deploy/
