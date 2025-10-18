@@ -9,9 +9,9 @@ __pycache__/
 gcp-credentials.json 
 
 # База данных и сгенерированные индексы
-# *.db
-# *.index
-#  *.json
+*.db
+*.index
+*.json
 *.jsonl
 
 temp_indexer_vertex.py
@@ -20,6 +20,9 @@ temp_add_game.py
 temp_migrate_add_summary.py
 temp_migrate_database.py
 temp_read_summary.py
+temp_summarize_project.py
+temp_ocr_test.py
+project_summary.txt
 
 
 
