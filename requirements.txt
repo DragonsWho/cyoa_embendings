@@ -1,7 +1,13 @@
 fastapi
 uvicorn[standard]
 faiss-cpu
-google-generativeai
 numpy
 python-dotenv
-tqdm  # Добавил для красивого индикатора прогресса в indexer.py
+tqdm
+google-generativeai
+openai
+pocketbase-client
+requests
+selenium
+webdriver-manager
+chardet

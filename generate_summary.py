@@ -67,14 +67,11 @@ def process_game(game_data, client, model_name, base_prompt):
     summary = generate_summary_with_openrouter(client, model_name, base_prompt, title, full_text)
     return pb_id, title, summary
 
-def main():
-    parser = argparse.ArgumentParser(description="Генератор описаний игр с помощью OpenRouter.")
-    parser.add_argument('--limit', type=int, default=None, help="Количество игр для обработки за один запуск.")
-    parser.add_argument('--workers', type=int, default=5, help="Количество параллельных потоков для запросов к API.")
-    args = parser.parse_args()
-
+def run_summary_generation(limit=None, workers=5):
+    """
+    Основная логика генерации описаний. Может быть вызвана из других скриптов.
+    """
     base_prompt = load_prompt()
-
     client = OpenAI(
       base_url="https://openrouter.ai/api/v1",
       api_key=OPENROUTER_API_KEY,
@@ -90,10 +87,10 @@ def main():
     """
     
     params = ()
-    if args.limit:
+    if limit:
         query += " LIMIT ?"
-        params = (args.limit,)
-        print(f"--- Тестовый режим: обработка не более {args.limit} игр ---")
+        params = (limit,)
+        print(f"--- Режим ограничения: обработка не более {limit} игр ---")
 
     cursor.execute(query, params)
     games_to_process = cursor.fetchall()
@@ -104,11 +101,11 @@ def main():
         return
 
     print(f"Найдено {len(games_to_process)} игр для генерации описаний с помощью {GENERATION_MODEL_NAME} через OpenRouter.")
-    print(f"Запускаем обработку в {args.workers} параллельных потоков...")
+    print(f"Запускаем обработку в {workers} параллельных потоков...")
     
     success_count = 0
     
-    with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_game = {
             executor.submit(process_game, game, client, GENERATION_MODEL_NAME, base_prompt): game
             for game in games_to_process
@@ -133,6 +130,16 @@ def main():
     print(f"\nЗавершено. Успешно сгенерировано описаний: {success_count}/{len(games_to_process)}.")
     if success_count > 0:
         print("Теперь запустите 'python indexer.py', чтобы добавить новые описания в поисковый индекс.")
+
+def main():
+    """
+    Точка входа при запуске скрипта напрямую. Парсит аргументы командной строки.
+    """
+    parser = argparse.ArgumentParser(description="Генератор описаний игр с помощью OpenRouter.")
+    parser.add_argument('--limit', type=int, default=None, help="Количество игр для обработки за один запуск.")
+    parser.add_argument('--workers', type=int, default=5, help="Количество параллельных потоков для запросов к API.")
+    args = parser.parse_args()
+    run_summary_generation(limit=args.limit, workers=args.workers)
 
 if __name__ == "__main__":
     main()

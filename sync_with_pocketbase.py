@@ -3,7 +3,10 @@ import os
 import sqlite3
 import json # Импортируем json для работы со списком ссылок
 from dotenv import load_dotenv
-from pocketbase import PocketBase
+# Используем нестандартный импорт, чтобы решить проблему с разными версиями библиотеки.
+# Мы импортируем класс 'Client' и даем ему псевдоним 'PocketBase' для совместимости.
+from pocketbase.client import Client as PocketBase
+
 
 # --- Конфигурация ---
 load_dotenv()
