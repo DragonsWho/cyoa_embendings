@@ -1,39 +1,6 @@
 # План по оптимизации и улучшению проекта CYOA Embeddings
 
-Этот документ содержит список задач для улучшения архитектуры, производительности и надежности проекта.
-
-## 1. Улучшение структуры и управления данными
-
-### 1.1. Централизация конфигурации
-
--   **Проблема:** Константы, такие как `DB_FILE`, `EMBEDDING_MODEL_NAME`, `OUTPUT_DIMENSION`, дублируются в нескольких скриптах (`fetch_game_text.py`, `indexer.py`, `main.py` и др.). Это усложняет их изменение и может привести к ошибкам.
--   **Решение:** Создать единый файл `config.py`, в котором будут храниться все общие параметры. Остальные скрипты должны импортировать настройки из него.
-
-    *Пример `config.py`:*
-    ```python
-    # --- Paths ---
-    DB_FILE = "games.db"
-    INDEX_FILE = "games.index"
-    MAPPING_FILE = "chunk_map.json"
-    LOG_FILE = "search_debug.log"
-    QUERY_LOG_FILE = "user_queries.jsonl"
-    SUMMARY_PROMPT_FILE = "summary_prompt.txt"
-
-    # --- Models ---
-    EMBEDDING_MODEL_NAME = "gemini-embedding-001"
-    GENERATION_MODEL_NAME = "deepseek/deepseek-v3.2-exp"
-
-    # --- API & Services ---
-    BASE_GAME_URL = "https://cyoa.cafe/game/"
-    POCKETBASE_URL = "https://cyoa.cafe"
-
-    # --- Processing ---
-    OUTPUT_DIMENSION = 256
-    BATCH_SIZE = 100
-    API_REQUEST_DELAY = 3 # seconds
-    ```
-
-
+ 
 
 ## 2. Оптимизация производительности
 
