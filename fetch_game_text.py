@@ -13,9 +13,8 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from webdriver_manager.chrome import ChromeDriverManager
-
-# --- Конфигурация ---
-DB_FILE = "games.db"
+# --- НОВЫЙ ИМПОРТ: Централизованная конфигурация ---
+import config
 
 # --- Функция json_to_text остается без изменений ---
 def json_to_text(data):
@@ -150,7 +149,7 @@ def main():
     """
     Основной процесс: найти игры без текста и запустить для них Fetcher.
     """
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(config.DB_FILE)
     cursor = conn.cursor()
 
     # ИЗМЕНЕНИЕ: Теперь мы выбираем и original_url

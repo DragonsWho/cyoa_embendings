@@ -7,7 +7,7 @@ import google.generativeai as genai
 import sqlite3
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.staticfiles import StaticFiles
+from fastapi.staticfiles import StaticFiles, Depends
 from fastapi.responses import FileResponse
 from typing import List, Dict, Any
 from enum import Enum
@@ -16,31 +16,18 @@ from datetime import datetime # <--- НОВЫЙ ИМПОРТ
 import math
 import logging
 from fastapi.middleware.cors import CORSMiddleware 
+# --- НОВЫЙ ИМПОРТ: Централизованная конфигурация ---
+import config
 
 # --- Конфигурация ---
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 genai.configure(api_key=GOOGLE_API_KEY)
 
-EMBEDDING_MODEL_NAME = "gemini-embedding-001"
-OUTPUT_DIMENSION = 256
-DB_FILE = "games.db"
-INDEX_FILE = "games.index"
-MAPPING_FILE = "chunk_map.json"
-BASE_GAME_URL = "https://cyoa.cafe/game/"
-
-# --- ПАРАМЕТРЫ ДЛЯ РАНЖИРОВАНИЯ ---
-SUMMARY_WEIGHT = 0.70 
-TEXT_WEIGHT = 0.30    
-DECAY_FACTOR = 0.85 
-
 # --- СЕКЦИЯ: КОНФИГУРАЦИЯ ЛОГИРОВАНИЯ ---
 # --- ИЗМЕНЕНИЕ: Отключаем детальное логгирование для продакшена ---
-DEBUG_LOGGING = False
-LOG_FILE = "search_debug.log"
-
 # Настраиваем логгер только если логирование включено
-if DEBUG_LOGGING:
+if config.DEBUG_LOGGING:
     # Используем getLogger, чтобы избежать проблем с uvicorn --reload
     logger = logging.getLogger(__name__)
     if not logger.handlers:
@@ -50,7 +37,7 @@ if DEBUG_LOGGING:
             logger.removeHandler(handler)
         
         # Создаем обработчик для файла
-        file_handler = logging.FileHandler(LOG_FILE, mode='a', encoding='utf-8')
+        file_handler = logging.FileHandler(config.LOG_FILE, mode='a', encoding='utf-8')
         file_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s'))
         logger.addHandler(file_handler)
 
@@ -65,7 +52,7 @@ else:
     logger = DummyLogger()
 
 # --- НОВЫЙ БЛОК: ЛОГИРОВАНИЕ ЗАПРОСОВ ПОЛЬЗОВАТЕЛЕЙ ДЛЯ АНАЛИТИКИ ---
-QUERY_LOG_FILE = "user_queries.jsonl"
+QUERY_LOG_FILE = config.QUERY_LOG_FILE
 
 # Настраиваем специальный логгер для сохранения запросов в виде JSON
 query_logger = logging.getLogger('user_queries')
@@ -116,21 +103,34 @@ chunk_map = {}
 def load_data():
     global faiss_index, chunk_map
     print("Загрузка индекса и карты...")
-    if os.path.exists(INDEX_FILE) and os.path.exists(MAPPING_FILE):
-        faiss_index = faiss.read_index(INDEX_FILE)
-        with open(MAPPING_FILE, 'r', encoding='utf-8') as f:
+    if os.path.exists(config.INDEX_FILE) and os.path.exists(config.MAPPING_FILE):
+        faiss_index = faiss.read_index(config.INDEX_FILE)
+        with open(config.MAPPING_FILE, 'r', encoding='utf-8') as f:
             chunk_map = {int(k): v for k, v in json.load(f).items()}
         print(f"Индекс загружен: {faiss_index.ntotal} векторов.")
     else:
         print("WARN: Файлы индекса не найдены. Поиск не будет работать.")
 
-@app.get("/api/semantic-search")
+# --- НОВЫЙ БЛОК: Управление подключением к БД через зависимости ---
+def get_db_connection():
+    """
+    FastAPI зависимость для получения соединения с БД.
+    Открывает соединение для одного запроса и гарантированно закрывает его после.
+    """
+    connection = sqlite3.connect(config.DB_FILE)
+    try:
+        yield connection
+    finally:
+        connection.close()
+# --- КОНЕЦ НОВОГО БЛОКА ---
 
+@app.get("/api/semantic-search")
 async def search_games(
     q: str = Query(..., min_length=2),
     mode: SearchMode = Query(SearchMode.mixed, description="Режим поиска: по тексту, по описанию или смешанный"),
-    k: int = 200, 
-    threshold: float = 0.40 
+    k: int = 200,
+    threshold: float = 0.40, 
+    conn: sqlite3.Connection = Depends(get_db_connection) # <--- ИНЪЕКЦИЯ ЗАВИСИМОСТИ
 ):
     if not faiss_index or not chunk_map:
         raise HTTPException(status_code=503, detail="Индекс не готов.")
@@ -141,10 +141,10 @@ async def search_games(
     try:
         # 1. Эмбеддинг запроса
         q_emb = genai.embed_content(
-            model=f"models/{EMBEDDING_MODEL_NAME}",
+            model=f"models/{config.EMBEDDING_MODEL_NAME}",
             content=q,
             task_type="RETRIEVAL_QUERY",
-            output_dimensionality=OUTPUT_DIMENSION
+            output_dimensionality=config.OUTPUT_DIMENSION
         )['embedding']
         q_vec = np.array([q_emb]).astype('float32')
         faiss.normalize_L2(q_vec)
@@ -225,8 +225,8 @@ async def search_games(
                 f"  - Text Scores (sorted): {[f'{s:.4f}' for s in sorted_text_scores]}\n"
                 f"  - -> Raw Text Score (decayed sum): {text_score:.4f}\n"
                 f"  - -> Normalized Text Score (B): {normalized_text_score:.4f}\n"
-                f"  >>> ИТОГОВАЯ ФОРМУЛА: (A * {SUMMARY_WEIGHT}) + (B * {TEXT_WEIGHT})\n"
-                f"  >>> РЕЗУЛЬТАТ: ({summary_score:.4f} * {SUMMARY_WEIGHT}) + ({normalized_text_score:.4f} * {TEXT_WEIGHT}) = {final_score:.4f}"
+                f"  >>> ИТОГОВАЯ ФОРМУЛА: (A * {config.SUMMARY_WEIGHT}) + (B * {config.TEXT_WEIGHT})\n"
+                f"  >>> РЕЗУЛЬТАТ: ({summary_score:.4f} * {config.SUMMARY_WEIGHT}) + ({normalized_text_score:.4f} * {config.TEXT_WEIGHT}) = {final_score:.4f}"
             )
             logger.info(log_msg)
             
@@ -243,20 +243,19 @@ async def search_games(
              logger.info(f"  #{i+1}: ID={game_id}, Final Score={score_data['score']:.4f}")
 
         # 6. Получение метаданных из БД и формирование ответа
-        conn = sqlite3.connect(DB_FILE)
         cursor = conn.cursor()
         placeholders = ','.join('?' * len(top_game_ids))
-        sql = f"SELECT pocketbase_id, title, summary FROM games WHERE pocketbase_id IN ({placeholders})"
+        sql = f"SELECT pocketbase_id, title, summary, original_url FROM games WHERE pocketbase_id IN ({placeholders})"
         cursor.execute(sql, top_game_ids)
         rows = cursor.fetchall()
-        conn.close()
 
         game_meta_map = {row[0]: (row[1], row[2]) for row in rows}
         
         results = []
         for game_id, score_data in top_games:
-            if game_id in game_meta_map:
-                title, summary = game_meta_map[game_id]
+            meta = game_meta_map.get(game_id)
+            if meta:
+                title, summary, original_url = meta
                 summary_snippet = (summary[:200] + "...") if summary else ""
                 
                 display_score = min(int(score_data["score"] * 100), 100)
@@ -264,7 +263,7 @@ async def search_games(
                 results.append({
                     "id": game_id,
                     "title": title,
-                    "url": f"{BASE_GAME_URL}{game_id}",
+                    "url": original_url or f"{config.BASE_GAME_URL}{game_id}",
                     "score": display_score,
                     "match_type": score_data["match_type"],
                     "snippet": summary_snippet
@@ -316,21 +315,18 @@ async def read_root():
     return FileResponse("static/index.html")
 
 @app.get("/stats")
-async def get_stats():
-    conn = sqlite3.connect(DB_FILE)
+async def get_stats(conn: sqlite3.Connection = Depends(get_db_connection)):
     cur = conn.cursor()
     total = cur.execute("SELECT COUNT(*) FROM games").fetchone()[0]
     with_text = cur.execute("SELECT COUNT(*) FROM games WHERE full_text IS NOT NULL AND full_text != ''").fetchone()[0]
     with_summary = cur.execute("SELECT COUNT(*) FROM games WHERE summary IS NOT NULL AND summary != ''").fetchone()[0]
     indexed = cur.execute("SELECT COUNT(*) FROM games WHERE last_indexed_at IS NOT NULL").fetchone()[0]
-    conn.close()
     return {"total": total, "with_text": with_text, "with_summary": with_summary, "indexed": indexed}
 
 @app.get("/games", response_model=List[Dict[str, Any]])
-async def get_all_games():
+async def get_all_games(conn: sqlite3.Connection = Depends(get_db_connection)):
     """Возвращает список всех игр в базе данных с их статусами."""
     try:
-        conn = sqlite3.connect(DB_FILE)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -343,7 +339,6 @@ async def get_all_games():
             ORDER BY title ASC
         """)
         rows = cursor.fetchall()
-        conn.close()
 
         games_list = []
         for row in rows:

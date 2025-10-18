@@ -9,26 +9,15 @@ import time
 from dotenv import load_dotenv
 from tqdm import tqdm
 from datetime import datetime
+# --- НОВЫЙ ИМПОРТ: Централизованная конфигурация ---
+import config
 
 # --- Конфигурация ---
 load_dotenv()
 GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
 if not GOOGLE_API_KEY:
     raise ValueError("Не найден GOOGLE_API_KEY в .env файле")
-
 genai.configure(api_key=GOOGLE_API_KEY)
-# Для эмбеддингов используем ту же модель
-EMBEDDING_MODEL_NAME = "gemini-embedding-001"
-
-OUTPUT_DIMENSION = 256
-BATCH_SIZE = 100 # Можно увеличить для embedding-001
-MAX_RETRIES = 3
-API_REQUEST_DELAY = 3 # Пауза в секундах между API запросами для избежания rate limit
-
-# --- Пути к файлам ---
-DB_FILE = "games.db"
-OUTPUT_INDEX_FILE = "games.index"
-OUTPUT_MAPPING_FILE = "chunk_map.json"
 
 def chunk_raw_text(text, chunk_size=500, overlap=50):
     """Разбивает сырой текст игры на чанки."""
@@ -51,18 +40,18 @@ def generate_embeddings_in_batches(texts):
     
     if not texts: return [], []
 
-    num_batches = (len(texts) + BATCH_SIZE - 1) // BATCH_SIZE
-    for i in tqdm(range(0, len(texts), BATCH_SIZE), total=num_batches, desc="API Gemini (Embeddings)"):
-        batch_texts = texts[i:i + BATCH_SIZE]
+    num_batches = (len(texts) + config.BATCH_SIZE - 1) // config.BATCH_SIZE
+    for i in tqdm(range(0, len(texts), config.BATCH_SIZE), total=num_batches, desc="API Gemini (Embeddings)"):
+        batch_texts = texts[i:i + config.BATCH_SIZE]
         retries = 0
         success = False
-        while retries < MAX_RETRIES:
+        while retries < config.MAX_RETRIES:
             try:
                 result = genai.embed_content(
-                    model=f"models/{EMBEDDING_MODEL_NAME}",
+                    model=f"models/{config.EMBEDDING_MODEL_NAME}",
                     content=batch_texts,
                     task_type="RETRIEVAL_DOCUMENT",
-                    output_dimensionality=OUTPUT_DIMENSION
+                    output_dimensionality=config.OUTPUT_DIMENSION
                 )
                 # Gemini может вернуть None для некоторых текстов в батче, если сработают фильтры безопасности
                 embeddings = result.get('embedding', [])
@@ -88,8 +77,8 @@ def generate_embeddings_in_batches(texts):
 
         # Добавляем паузу после обработки каждого батча, чтобы не превышать лимиты API.
         # Небольшая оптимизация: не ждем после самого последнего батча.
-        if i + BATCH_SIZE < len(texts):
-            time.sleep(API_REQUEST_DELAY)
+        if i + config.BATCH_SIZE < len(texts):
+            time.sleep(config.API_REQUEST_DELAY)
 
     return all_embeddings, successful_indices
 
@@ -97,7 +86,7 @@ def main():
     # Мы всегда пересоздаем индекс целиком для простоты и надежности (Faiss FlatIP быстрый)
     print("Подготовка к полной переиндексации...")
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(config.DB_FILE)
     conn.row_factory = sqlite3.Row
     cursor = conn.cursor()
 
@@ -177,13 +166,13 @@ def main():
     faiss.normalize_L2(embeddings_np)
 
     print(f"Создание IndexFlatIP для {len(embeddings_np)} векторов...")
-    index = faiss.IndexFlatIP(OUTPUT_DIMENSION)
+    index = faiss.IndexFlatIP(config.OUTPUT_DIMENSION)
     index.add(embeddings_np)
 
     # --- Сохранение результатов ---
     print("Сохранение индекса и карты...")
-    faiss.write_index(index, OUTPUT_INDEX_FILE)
-    with open(OUTPUT_MAPPING_FILE, 'w', encoding='utf-8') as f:
+    faiss.write_index(index, config.INDEX_FILE)
+    with open(config.MAPPING_FILE, 'w', encoding='utf-8') as f:
         json.dump(final_chunk_map, f, ensure_ascii=False, indent=2)
 
     # --- Обновление статусов в БД ---

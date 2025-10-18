@@ -1,17 +1,16 @@
 # clear_database.py
 import sqlite3
 import os
-
-DB_FILE = "games.db"
+import config
 
 def clear_all_games():
     """Удаляет все записи из таблицы 'games', не удаляя саму таблицу."""
-    if not os.path.exists(DB_FILE):
-        print(f"Файл базы данных '{DB_FILE}' не найден. Нечего очищать.")
+    if not os.path.exists(config.DB_FILE):
+        print(f"Файл базы данных '{config.DB_FILE}' не найден. Нечего очищать.")
         return
 
     try:
-        conn = sqlite3.connect(DB_FILE)
+        conn = sqlite3.connect(config.DB_FILE)
         cursor = conn.cursor()
 
         # Получаем количество записей перед удалением

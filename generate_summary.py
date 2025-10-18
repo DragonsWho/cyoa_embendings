@@ -6,6 +6,8 @@ import concurrent.futures
 from dotenv import load_dotenv
 from openai import OpenAI
 from tqdm import tqdm
+# --- НОВЫЙ ИМПОРТ: Централизованная конфигурация ---
+import config
 
 # --- Конфигурация ---
 load_dotenv()
@@ -13,16 +15,11 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
 if not OPENROUTER_API_KEY:
     raise ValueError("Не найден OPENROUTER_API_KEY в .env файле")
 
-GENERATION_MODEL_NAME = "deepseek/deepseek-v3.2-exp"
-
-DB_FILE = "games.db"
-PROMPT_FILE = "summary_prompt.txt"
-
 def load_prompt():
     """Загружает системный промпт из файла."""
-    if not os.path.exists(PROMPT_FILE):
-        raise FileNotFoundError(f"Не найден файл промпта: {PROMPT_FILE}")
-    with open(PROMPT_FILE, 'r', encoding='utf-8') as f:
+    if not os.path.exists(config.SUMMARY_PROMPT_FILE):
+        raise FileNotFoundError(f"Не найден файл промпта: {config.SUMMARY_PROMPT_FILE}")
+    with open(config.SUMMARY_PROMPT_FILE, 'r', encoding='utf-8') as f:
         return f.read().strip()
 
 # <--- ИЗМЕНЕНИЕ: Добавили 'game_title' для логирования ошибок --->
@@ -77,7 +74,7 @@ def run_summary_generation(limit=None, workers=5):
       api_key=OPENROUTER_API_KEY,
     )
 
-    conn = sqlite3.connect(DB_FILE)
+    conn = sqlite3.connect(config.DB_FILE)
     cursor = conn.cursor()
 
     query = """
@@ -100,14 +97,14 @@ def run_summary_generation(limit=None, workers=5):
         conn.close()
         return
 
-    print(f"Найдено {len(games_to_process)} игр для генерации описаний с помощью {GENERATION_MODEL_NAME} через OpenRouter.")
+    print(f"Найдено {len(games_to_process)} игр для генерации описаний с помощью {config.GENERATION_MODEL_NAME} через OpenRouter.")
     print(f"Запускаем обработку в {workers} параллельных потоков...")
     
     success_count = 0
     
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
         future_to_game = {
-            executor.submit(process_game, game, client, GENERATION_MODEL_NAME, base_prompt): game
+            executor.submit(process_game, game, client, config.GENERATION_MODEL_NAME, base_prompt): game
             for game in games_to_process
         }
         
