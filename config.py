@@ -12,7 +12,7 @@ MAPPING_FILE = "chunk_map.json"
 SUMMARY_PROMPT_FILE = "summary_prompt.txt"
 
 # --- Логирование ---
-DEBUG_LOGGING = False # Включает/выключает детальное логгирование в main.py
+DEBUG_LOGGING = True # Включает/выключает детальное логгирование в main.py
 LOG_FILE = "search_debug.log"
 QUERY_LOG_FILE = "user_queries.jsonl"
 
