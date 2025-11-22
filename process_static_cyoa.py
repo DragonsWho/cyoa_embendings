@@ -1,4 +1,11 @@
 # process_static_cyoa.py
+
+
+import logging
+# Устанавливаем уровень логирования для библиотек Google выше, чтобы скрыть информационные сообщения
+logging.getLogger('google.api_core').setLevel(logging.WARNING)
+logging.getLogger('google.auth').setLevel(logging.WARNING)
+logging.getLogger('google.cloud').setLevel(logging.WARNING)
 import os
 import sqlite3
 import json
@@ -6,6 +13,9 @@ import requests # Для скачивания изображений
 from datetime import datetime
 from dotenv import load_dotenv
 from google.cloud import vision
+
+
+
 
 # --- Конфигурация ---
 load_dotenv()
